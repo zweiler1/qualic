@@ -45,40 +45,21 @@ pub fn main() !void {
     if (bytes_read != stat.size) {
         std.debug.print("Not all bytes read! {d}/{d}\n", .{ bytes_read, stat.size });
     }
-    std.debug.print("------ Buffer Start ------\n{s}\n------ Buffer End ------\n\n", .{file_content});
+    std.debug.print("------ Buffer Start ------\n{s}\n------ Buffer End ------\n", .{file_content});
 
     var lexer: Lexer = .init(file_content);
     defer lexer.deinit(allocator);
     try lexer.tokenize(allocator);
-    std.debug.print("------ Token Stream Start ------\n", .{});
+    std.debug.print("\n------ Token Stream Start ------\n", .{});
     try lexer.printTokens();
     std.debug.print("------ Token Stream End ----\n", .{});
-
-    // Split the preprocessed file by line into an array of slices
-    // var lines: std.ArrayList([]const u8) = .empty;
-    // defer lines.deinit(allocator);
-    // var it = std.mem.splitScalar(u8, file_to_parse, '\n');
-    // while (it.next()) |chunk| {
-    //     try lines.append(allocator, chunk);
-    // }
 
     var parser: Parser = .init(lexer.tokens.items);
     defer parser.deinit(allocator);
     try parser.parse(allocator);
-
-    for (parser.changes.items, 0..) |change, i| {
-        std.debug.print("changes[{d}]: {s}: {{\n", .{ i, @tagName(change) });
-        switch (change) {
-            .move => |move| {
-                std.debug.print("\tfn_start_line: {d},\n", .{move.fn_start_line});
-                std.debug.print("\tfn_end_line: {d},\n", .{move.fn_end_line});
-                std.debug.print("\tstruct_end_line: {d},\n", .{move.struct_end_line});
-                std.debug.print("\tstruct_type_name: {s}\n", .{move.struct_type_name});
-            },
-            .instance => {},
-            .namespace => {},
-        }
-        std.debug.print("}}\n", .{});
+    std.debug.print("\n------ Changes Start ------\n", .{});
+    parser.printChanges();
+    std.debug.print("------ Changes End ----\n", .{});
     }
 
     var hash: [8]u8 = undefined;

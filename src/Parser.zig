@@ -167,7 +167,6 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
                 // Not a call definition
                 continue;
             }
-            std.debug.print("CALL IN STRUCT: {s}\n", .{token.lexeme});
             in_function_scope = StructFunctionScope{
                 .function_name = token.lexeme,
                 .definition_line = token.line,
@@ -182,6 +181,23 @@ pub fn apply(self: *Self) []const u8 {
     _ = self;
     // TODO: apply all the collected changes from the first stage
     // We first apply the smaller changes like the call changes and then we apply the move changes
+}
+
+pub fn printChanges(self: *Self) void {
+    for (self.changes.items, 0..) |change, i| {
+        std.debug.print("changes[{d}]: {s}: {{\n", .{ i, @tagName(change) });
+        switch (change) {
+            .move => |move| {
+                std.debug.print("    fn_start_line: {d},\n", .{move.fn_start_line});
+                std.debug.print("    fn_end_line: {d},\n", .{move.fn_end_line});
+                std.debug.print("    struct_end_line: {d},\n", .{move.struct_end_line});
+                std.debug.print("    struct_type_name: \"{s}\"\n", .{move.struct_type_name});
+            },
+            .instance => {},
+            .namespace => {},
+        }
+        std.debug.print("}}\n", .{});
+    }
 }
 
 pub fn createHash(input: []const u8, hash: *[8]u8) void {
