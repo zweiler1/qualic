@@ -80,3 +80,37 @@ pub fn apply(self: *Self) []const u8 {
     // TODO: apply all the collected changes from the first stage
     // We first apply the smaller changes like the call changes and then we apply the move changes
 }
+
+pub fn createHash(input: []const u8, hash: *[8]u8) void {
+    const charset: []const u8 = "123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    const charset_size: u32 = 61;
+
+    hash[0] = '0';
+    if (input.len == 0) {
+        return;
+    }
+
+    var seed: u32 = 2166136261;
+
+    // FNV-1a over bytes; perform multiplication in u64 and truncate
+    for (input) |b| {
+        seed ^= @intCast(b);
+        seed = @truncate(@as(u64, seed) * 16777619);
+    }
+
+    var i: u32 = 0;
+    while (i < 8) : (i += 1) {
+        // compute pos_hash with truncating 32-bit behavior
+        var pos_hash: u32 = seed ^ @as(u32, @truncate(@as(u64, i) * 0x9E3779B9));
+
+        pos_hash = @truncate(@as(u64, pos_hash) * 0x85EBCA6B);
+        pos_hash ^= pos_hash >> 13;
+        pos_hash = @truncate(@as(u64, pos_hash) * 0xC2B2AE35);
+        pos_hash ^= pos_hash >> 16;
+
+        const idx: usize = @intCast(pos_hash % charset_size);
+        hash[@as(usize, @intCast(i))] = charset[idx];
+
+        seed = pos_hash;
+    }
+}
