@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Lexer = @import("Lexer.zig");
+const Parser = @import("Parser.zig");
 
 // 1. Run the pre-processor stage
 //      clang -E -x c -P test.in.qlc -o test.middle.qlc
@@ -33,7 +34,9 @@ pub fn main() !void {
     _ = try preproc.spawnAndWait();
 
     // Load the preprocessed file
-    const file = try std.fs.cwd().openFile(input, .{});
+    // 'input' should be 'middle' here, but for easier testing we use 'input' for now
+    const file_to_parse = input;
+    const file = try std.fs.cwd().openFile(file_to_parse, .{});
     defer file.close();
     const stat = try file.stat();
     const file_content = try allocator.alloc(u8, stat.size);
@@ -50,4 +53,16 @@ pub fn main() !void {
     std.debug.print("------ Token Stream Start ------\n", .{});
     try lexer.printTokens();
     std.debug.print("------ Token Stream End ----\n", .{});
+
+    // Split the preprocessed file by line into an array of slices
+    // var lines: std.ArrayList([]const u8) = .empty;
+    // defer lines.deinit(allocator);
+    // var it = std.mem.splitScalar(u8, file_to_parse, '\n');
+    // while (it.next()) |chunk| {
+    //     try lines.append(allocator, chunk);
+    // }
+
+    var parser: Parser = .init(lexer.tokens.items);
+    defer parser.deinit(allocator);
+    try parser.parse(allocator);
 }
