@@ -3,6 +3,7 @@
 
 typedef struct MyStruct {
   int32_t x, y, z;
+  char c;
 } MyStruct;
 void MyStruct_print(MyStruct *self) asm("FILEHASH.MyStruct.print");
 void MyStruct_print(MyStruct *self) { // FILEHASH.MyStruct.print
@@ -16,7 +17,7 @@ void somefunction() { // FILEHASH.somefunction
 
 int main(void) {
   somefunction();
-  MyStruct s = (MyStruct){.x = 10, .y = 20, .z = 30};
+  MyStruct s = (MyStruct){.x = 10, .y = 20, .z = 30, .c = '\n'};
   MyStruct_print(&s);
   printf("\n");
   return 0;
