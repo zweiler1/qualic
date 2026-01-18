@@ -77,6 +77,7 @@ pub fn main() !void {
     }
 
     // Apply all the changes and get the combined file back
-    const transpiled_file: []const u8 = parser.apply(&lines);
-    _ = transpiled_file;
+    const transpiled_file: []const u8 = try parser.apply(allocator, &lines);
+    std.debug.print("\n------ Transpiled File Start ------\n{s}------ Transpiled File End ------\n", .{transpiled_file});
+    std.debug.assert(transpiled_file.len == file_content.len);
 }

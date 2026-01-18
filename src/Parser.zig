@@ -195,15 +195,38 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
     }
 }
 
-pub fn apply(self: *Self, lines: *SinglyLinkedList(Line)) []const u8 {
+pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList(Line)) ![]const u8 {
     _ = self;
-    // For now only print all the lines
+    // For now we do not apply any operations, let's make the line building work first
+    // const LineChanges = struct {
+    //     after_line: usize,
+    //     diff: isize,
+    // };
+    // while (self.changes.items.len > 0) {
+    //     // Take one change after the other and update all remaining ones afterwards (their line numbers)
+    //
+    //     for (self.changes.items) |change| {}
+    // }
+
+    // Now we build up the output string from all the lines
     var line_it = lines.head;
+    var file: []u8 = undefined;
+    var i: usize = 0;
     while (line_it) |line| {
-        std.debug.print("line[{d}]: {s}\n", .{ line.value.num, line.value.chars });
+        if (i == 0) {
+            file = try allocator.alloc(u8, line.value.chars.len);
+            @memmove(file[0..], line.value.chars[0..]);
+        } else {
+            const old_len: usize = file.len;
+            file = try allocator.realloc(file, old_len + line.value.chars.len + 1);
+            file[old_len] = '\n';
+            std.debug.assert(file.len - old_len - 1 == line.value.chars.len);
+            @memmove(file[old_len + 1 ..], line.value.chars[0..]);
+        }
         line_it = line.next;
+        i += 1;
     }
-    return "";
+    return file;
 }
 
 pub fn printChanges(self: *Self) void {
