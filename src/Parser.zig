@@ -240,7 +240,6 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
 }
 
 pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList(Line)) ![]const u8 {
-    std.debug.print("entering apply function...\n", .{});
     var new_lines: SinglyLinkedList(Line) = .{};
     defer new_lines.clearAndFree(allocator);
     var line_it = lines.head;
@@ -250,12 +249,8 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList
     var struct_end_added: std.StringHashMap(bool) = .init(allocator);
     while (line_it) |line| {
         if (changes_head) |change| {
-            std.debug.print("changes_head has value!\n", .{});
             blk: switch (change.value) {
                 .move => |move| {
-                    std.debug.print("changes_head is 'move'\n", .{});
-                    std.debug.print("line.value.num = {d}\n", .{line.value.num});
-                    std.debug.print("move.fn_start_line = {d}\n", .{move.fn_start_line});
                     if (line.value.num < move.fn_start_line) {
                         break :blk;
                     }
@@ -280,7 +275,6 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList
                         indent_lvl += 1;
                     }
                     while (line_it != null and line_it.?.value.num <= move.fn_end_line) {
-                        std.debug.print("appending line ({d}): {s}\n", .{ line_it.?.value.num, line_it.?.value.chars });
                         // Build a new line with n characters removed from the indent level
                         try new_lines.append(allocator, .{
                             .num = line_it.?.value.num,

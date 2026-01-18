@@ -186,42 +186,6 @@ changes[0]: move: {
     struct_type_name: "MyStruct"
 }
 ------ Changes End ----
-entering apply function...
-changes_head has value!
-changes_head is 'move'
-line.value.num = 1
-move.fn_start_line = 8
-changes_head has value!
-changes_head is 'move'
-line.value.num = 2
-move.fn_start_line = 8
-changes_head has value!
-changes_head is 'move'
-line.value.num = 3
-move.fn_start_line = 8
-changes_head has value!
-changes_head is 'move'
-line.value.num = 4
-move.fn_start_line = 8
-changes_head has value!
-changes_head is 'move'
-line.value.num = 5
-move.fn_start_line = 8
-changes_head has value!
-changes_head is 'move'
-line.value.num = 6
-move.fn_start_line = 8
-changes_head has value!
-changes_head is 'move'
-line.value.num = 7
-move.fn_start_line = 8
-changes_head has value!
-changes_head is 'move'
-line.value.num = 8
-move.fn_start_line = 8
-appending line (8):   void print(MyStruct *self) {
-appending line (9):     printf("(%i, %i, %i)", self->x, self->y, self->z);
-appending line (10):   }
 
 ------ Transpiled File Start ------
 #include <stdint.h>
