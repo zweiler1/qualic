@@ -196,7 +196,8 @@ typedef struct MyStruct {
   char c;
 
 } MyStruct;
-void print(MyStruct *self) {
+void MyStruct_print(MyStruct *self) asm("FILE_HASH.MyStruct.print");
+void MyStruct_print(MyStruct *self) {
   printf("(%i, %i, %i)", self->x, self->y, self->z);
 }
 

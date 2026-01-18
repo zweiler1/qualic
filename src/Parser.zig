@@ -264,16 +264,61 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList
                         try lines.removeAt(allocator, line_idx);
                         try struct_end_added.put(move.struct_type_name, true);
                     }
-                    // TODO: The first line is a bit special since we need to duplicate it for the
-                    // symbol declaration. (the `asm(...)` stuff at the end). For now we simply do
-                    // not bother with this.
-                    std.debug.assert(line.value.num == move.fn_start_line);
                     // Check the level of indentation of the function
                     var indent_lvl: usize = 0;
                     const start_line = lines.getAt(getIdxOfLineNum(lines.*, move.fn_start_line).?).?;
                     while (start_line.chars[indent_lvl] == ' ') {
                         indent_lvl += 1;
                     }
+                    std.debug.assert(line.value.num == move.fn_start_line);
+                    std.debug.assert(line_it != null);
+                    // Okay now we need to find and replace the function name with the struct type
+                    // followed by an underscore and then the function name like `MyStruct_function`.
+                    // And then we need to do the same but also add the `asm("...")` line afterwards,
+                    // change the `{` to a `;` and remove all whitespaces in front of the `;`. This
+                    // line needs to be inserted first.
+                    const line_tokens = self.getTokensOfLine(start_line.num);
+                    var fn_name: []const u8 = undefined;
+                    for (line_tokens, 0..) |token, i| {
+                        if (token.type == .identifier and line_tokens[i + 1].type == .l_paren) {
+                            fn_name = token.lexeme;
+                        }
+                    }
+
+                    // Get the function name and get the new function name too
+                    const new_fn_name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ move.struct_type_name, fn_name });
+                    defer allocator.free(new_fn_name);
+                    const line_name_replaced: []u8 = try std.mem.replaceOwned(u8, allocator, start_line.chars, fn_name, new_fn_name);
+                    defer allocator.free(line_name_replaced);
+                    const last_character: u8 = line_name_replaced[line_name_replaced.len - 1];
+                    std.debug.assert(last_character == '{' or last_character == ';');
+                    // Now add the first line definition
+                    var line_definition: []const u8 = try allocator.dupe(u8, line_name_replaced);
+                    defer allocator.free(line_definition);
+                    line_definition = line_definition[0 .. line_definition.len - 1];
+                    // Remove all whitespacing and then create the definition name
+                    line_definition = std.mem.trimEnd(u8, line_definition, " ");
+                    const formatted_definition_line = try std.fmt.allocPrint(allocator, "{s} asm(\"{s}.{s}.{s}\");", .{
+                        line_definition,
+                        "FILE_HASH",
+                        move.struct_type_name,
+                        fn_name,
+                    });
+                    try new_lines.append(allocator, .{
+                        .num = start_line.num,
+                        .chars = formatted_definition_line[indent_lvl..],
+                    });
+                    // Now add the definition line with the `asm` formatted at the end
+                    if (last_character == '{') {
+                        // We have a implementation directly inside the struct, so we need to add the second line too
+                        try new_lines.append(allocator, .{
+                            .num = start_line.num,
+                            .chars = line_name_replaced[indent_lvl..],
+                        });
+                    }
+
+                    // Skip the first line since it already has been added (twice)
+                    line_it = line_it.?.next;
                     while (line_it != null and line_it.?.value.num <= move.fn_end_line) {
                         // Build a new line with n characters removed from the indent level
                         try new_lines.append(allocator, .{
@@ -373,6 +418,19 @@ pub fn createHash(input: []const u8, hash: *[8]u8) void {
 
         seed = pos_hash;
     }
+}
+
+fn getTokensOfLine(self: *Self, line_num: usize) []Lexer.Token {
+    var i: usize = 0;
+    while (self.tokens[i].line < line_num) {
+        i += 1;
+    }
+    const start: usize = i;
+    while (self.tokens[i].line == line_num) {
+        i += 1;
+    }
+    std.debug.assert(start != i);
+    return self.tokens[start..i];
 }
 
 fn getIdxOfLineNum(lines: SinglyLinkedList(Line), line_num: usize) ?usize {
