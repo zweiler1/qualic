@@ -6,12 +6,12 @@ typedef struct MyStruct {
   char c;
 } MyStruct;
 void MyStruct_print(MyStruct *self) asm("FILEHASH.MyStruct.print");
-void MyStruct_print(MyStruct *self) { // FILEHASH.MyStruct.print
+void MyStruct_print(MyStruct *self) {
   printf("(%i, %i, %i)", self->x, self->y, self->z);
 }
 
 void somefunction() asm("FILEHASH.somefunction");
-void somefunction() { // FILEHASH.somefunction
+void somefunction() {
   printf("Hello, World!\n");
 }
 
