@@ -1,0 +1,250 @@
+------ Buffer Start ------
+#include <stdint.h>
+#include <stdio.h>
+
+typedef struct MyStruct {
+  int32_t x, y, z;
+  char c;
+
+  void print(MyStruct *self) {
+    printf("(%i, %i, %i)", self->x, self->y, self->z);
+  }
+} MyStruct;
+
+void someFunction() {
+  printf("Hello, World!\n");
+}
+
+int main(void) {
+  someFunction();
+  MyStruct s = (MyStruct){.x = 0b10, .y = 0xFF, .z = 0o30, .c = '\n'};
+  s.print();
+  printf("\n");
+  return 0;
+}
+
+------ Buffer End ------
+
+------ Token Stream Start ------
+3:0   | eol            | 
+
+4:0   | typedef        | typedef
+4:8   | struct         | struct
+4:15  | identifier     | MyStruct
+4:24  | l_brace        | {
+4:25  | eol            | 
+
+5:2   | identifier     | int32_t
+5:10  | identifier     | x
+5:11  | comma          | ,
+5:13  | identifier     | y
+5:14  | comma          | ,
+5:16  | identifier     | z
+5:17  | semicolon      | ;
+5:18  | eol            | 
+
+6:2   | char           | char
+6:7   | identifier     | c
+6:8   | semicolon      | ;
+6:9   | eol            | 
+
+7:0   | eol            | 
+
+8:2   | void           | void
+8:7   | identifier     | print
+8:12  | l_paren        | (
+8:13  | identifier     | MyStruct
+8:22  | mult           | *
+8:23  | identifier     | self
+8:27  | r_paren        | )
+8:29  | l_brace        | {
+8:30  | eol            | 
+
+9:4   | identifier     | printf
+9:10  | l_paren        | (
+9:12  | string_literal | (%i, %i, %i)
+9:25  | comma          | ,
+9:27  | identifier     | self
+9:31  | arrow          | ->
+9:33  | identifier     | x
+9:34  | comma          | ,
+9:36  | identifier     | self
+9:40  | arrow          | ->
+9:42  | identifier     | y
+9:43  | comma          | ,
+9:45  | identifier     | self
+9:49  | arrow          | ->
+9:51  | identifier     | z
+9:52  | r_paren        | )
+9:53  | semicolon      | ;
+9:54  | eol            | 
+
+10:2  | r_brace        | }
+10:3  | eol            | 
+
+11:0  | r_brace        | }
+11:2  | identifier     | MyStruct
+11:10 | semicolon      | ;
+11:11 | eol            | 
+
+12:0  | eol            | 
+
+13:0  | void           | void
+13:5  | identifier     | someFunction
+13:17 | l_paren        | (
+13:18 | r_paren        | )
+13:20 | l_brace        | {
+13:21 | eol            | 
+
+14:2  | identifier     | printf
+14:8  | l_paren        | (
+14:10 | string_literal | Hello, World!\n
+14:26 | r_paren        | )
+14:27 | semicolon      | ;
+14:28 | eol            | 
+
+15:0  | r_brace        | }
+15:1  | eol            | 
+
+16:0  | eol            | 
+
+17:0  | int            | int
+17:4  | identifier     | main
+17:8  | l_paren        | (
+17:9  | void           | void
+17:13 | r_paren        | )
+17:15 | l_brace        | {
+17:16 | eol            | 
+
+18:2  | identifier     | someFunction
+18:14 | l_paren        | (
+18:15 | r_paren        | )
+18:16 | semicolon      | ;
+18:17 | eol            | 
+
+19:2  | identifier     | MyStruct
+19:11 | identifier     | s
+19:13 | assign         | =
+19:15 | l_paren        | (
+19:16 | identifier     | MyStruct
+19:24 | r_paren        | )
+19:25 | l_brace        | {
+19:26 | dot            | .
+19:27 | identifier     | x
+19:29 | assign         | =
+19:31 | number_literal | 0b10
+19:35 | comma          | ,
+19:37 | dot            | .
+19:38 | identifier     | y
+19:40 | assign         | =
+19:42 | number_literal | 0xFF
+19:46 | comma          | ,
+19:48 | dot            | .
+19:49 | identifier     | z
+19:51 | assign         | =
+19:53 | number_literal | 0o30
+19:57 | comma          | ,
+19:59 | dot            | .
+19:60 | identifier     | c
+19:62 | assign         | =
+19:65 | char_literal   | \n
+19:68 | r_brace        | }
+19:69 | semicolon      | ;
+19:70 | eol            | 
+
+20:2  | identifier     | s
+20:3  | dot            | .
+20:4  | identifier     | print
+20:9  | l_paren        | (
+20:10 | r_paren        | )
+20:11 | semicolon      | ;
+20:12 | eol            | 
+
+21:2  | identifier     | printf
+21:8  | l_paren        | (
+21:10 | string_literal | \n
+21:13 | r_paren        | )
+21:14 | semicolon      | ;
+21:15 | eol            | 
+
+22:2  | return         | return
+22:9  | number_literal | 0
+22:10 | semicolon      | ;
+22:11 | eol            | 
+
+23:0  | r_brace        | }
+23:1  | eol            | 
+
+0:0   | eof            | 
+------ Token Stream End ----
+
+------ Changes Start ------
+changes[0]: move: {
+    fn_start_line: 8,
+    fn_end_line: 10,
+    struct_end_line: 11,
+    struct_type_name: "MyStruct"
+}
+------ Changes End ----
+entering apply function...
+changes_head has value!
+changes_head is 'move'
+line.value.num = 1
+move.fn_start_line = 8
+changes_head has value!
+changes_head is 'move'
+line.value.num = 2
+move.fn_start_line = 8
+changes_head has value!
+changes_head is 'move'
+line.value.num = 3
+move.fn_start_line = 8
+changes_head has value!
+changes_head is 'move'
+line.value.num = 4
+move.fn_start_line = 8
+changes_head has value!
+changes_head is 'move'
+line.value.num = 5
+move.fn_start_line = 8
+changes_head has value!
+changes_head is 'move'
+line.value.num = 6
+move.fn_start_line = 8
+changes_head has value!
+changes_head is 'move'
+line.value.num = 7
+move.fn_start_line = 8
+changes_head has value!
+changes_head is 'move'
+line.value.num = 8
+move.fn_start_line = 8
+appending line (8):   void print(MyStruct *self) {
+appending line (9):     printf("(%i, %i, %i)", self->x, self->y, self->z);
+appending line (10):   }
+
+------ Transpiled File Start ------
+#include <stdint.h>
+#include <stdio.h>
+
+typedef struct MyStruct {
+  int32_t x, y, z;
+  char c;
+
+} MyStruct;
+void print(MyStruct *self) {
+  printf("(%i, %i, %i)", self->x, self->y, self->z);
+}
+
+void someFunction() {
+  printf("Hello, World!\n");
+}
+
+int main(void) {
+  someFunction();
+  MyStruct s = (MyStruct){.x = 0b10, .y = 0xFF, .z = 0o30, .c = '\n'};
+  s.print();
+  printf("\n");
+  return 0;
+}
+------ Transpiled File End ------

@@ -4,6 +4,7 @@
 typedef struct MyStruct {
   int32_t x, y, z;
   char c;
+
 } MyStruct;
 void MyStruct_print(MyStruct *self) asm("FILEHASH.MyStruct.print");
 void MyStruct_print(MyStruct *self) {

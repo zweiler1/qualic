@@ -66,7 +66,7 @@ pub fn main() !void {
     var lines: SinglyLinkedList(Parser.Line) = .{};
     defer lines.clearAndFree(allocator);
     var it = std.mem.splitScalar(u8, file_content, '\n');
-    var line_id: usize = 0;
+    var line_id: usize = 1;
     while (it.next()) |line| {
         // The line itself duplicates the line chars in it's "clone" call
         try lines.append(allocator, .{
@@ -79,5 +79,4 @@ pub fn main() !void {
     // Apply all the changes and get the combined file back
     const transpiled_file: []const u8 = try parser.apply(allocator, &lines);
     std.debug.print("\n------ Transpiled File Start ------\n{s}------ Transpiled File End ------\n", .{transpiled_file});
-    std.debug.assert(transpiled_file.len == file_content.len);
 }

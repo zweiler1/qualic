@@ -20,6 +20,10 @@ pub const Line = struct {
             .chars = try allocator.dupe(u8, self.chars),
         };
     }
+
+    pub fn eql(self: *const Line, other: *const Line) bool {
+        return self.num == other.num;
+    }
 };
 
 // The 'ChangeMoveFunction' change moves a function from within a struct body after it, for this it
@@ -68,18 +72,58 @@ pub const Change = union(enum) {
     move: ChangeMoveFunction,
     namespace: ChangeNamespaceCall,
     instance: ChangeInstanceCall,
+
+    pub fn deinit(self: *Change, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .move => |move| {
+                allocator.free(move.struct_type_name);
+            },
+            .namespace => {},
+            .instance => |instance| {
+                allocator.free(instance.type);
+                allocator.free(instance.instance);
+            },
+        }
+    }
+
+    pub fn clone(self: *const Change, allocator: std.mem.Allocator) anyerror!Change {
+        return switch (self.*) {
+            .move => |move| .{
+                .move = .{
+                    .fn_start_line = move.fn_start_line,
+                    .fn_end_line = move.fn_end_line,
+                    .struct_end_line = move.struct_end_line,
+                    .struct_type_name = try allocator.dupe(u8, move.struct_type_name),
+                },
+            },
+            .namespace => |namespace| .{
+                .namespace = .{
+                    .line = namespace.line,
+                    .column = namespace.column,
+                },
+            },
+            .instance => |instance| .{
+                .instance = .{
+                    .line = instance.line,
+                    .column = instance.column,
+                    .type = try allocator.dupe(u8, instance.type),
+                    .instance = try allocator.dupe(u8, instance.instance),
+                },
+            },
+        };
+    }
 };
 
 // A non-owning list of all tokens this parser works on
 tokens: []Lexer.Token,
 
 // A list of all changes which need to be done to the source code
-changes: std.ArrayList(Change),
+changes: SinglyLinkedList(Change),
 
 pub fn init(tokens: []Lexer.Token) Self {
     return .{
         .tokens = tokens,
-        .changes = .empty,
+        .changes = .{},
     };
 }
 
@@ -196,20 +240,73 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
 }
 
 pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList(Line)) ![]const u8 {
-    _ = self;
-    // For now we do not apply any operations, let's make the line building work first
-    // const LineChanges = struct {
-    //     after_line: usize,
-    //     diff: isize,
-    // };
-    // while (self.changes.items.len > 0) {
-    //     // Take one change after the other and update all remaining ones afterwards (their line numbers)
-    //
-    //     for (self.changes.items) |change| {}
-    // }
+    std.debug.print("entering apply function...\n", .{});
+    var new_lines: SinglyLinkedList(Line) = .{};
+    defer new_lines.clearAndFree(allocator);
+    var line_it = lines.head;
+    // We take the first move change we can find and move all lines from the input to the
+    // output until we reach the first move line
+    var changes_head = self.changes.head;
+    var struct_end_added: std.StringHashMap(bool) = .init(allocator);
+    while (line_it) |line| {
+        if (changes_head) |change| {
+            std.debug.print("changes_head has value!\n", .{});
+            blk: switch (change.value) {
+                .move => |move| {
+                    std.debug.print("changes_head is 'move'\n", .{});
+                    std.debug.print("line.value.num = {d}\n", .{line.value.num});
+                    std.debug.print("move.fn_start_line = {d}\n", .{move.fn_start_line});
+                    if (line.value.num < move.fn_start_line) {
+                        break :blk;
+                    }
+                    // If the 'struct_end_added' map does not contain an entry for the current struct type
+                    // then we need to first add the struct end line to the output lines and remove it from
+                    // the input lines all together
+                    if (struct_end_added.getKey(move.struct_type_name) == null) {
+                        const line_idx: usize = getIdxOfLineNum(lines.*, move.struct_end_line).?;
+                        const end_line = lines.getAt(line_idx).?;
+                        try new_lines.append(allocator, end_line.*);
+                        try lines.removeAt(allocator, line_idx);
+                        try struct_end_added.put(move.struct_type_name, true);
+                    }
+                    // TODO: The first line is a bit special since we need to duplicate it for the
+                    // symbol declaration. (the `asm(...)` stuff at the end). For now we simply do
+                    // not bother with this.
+                    std.debug.assert(line.value.num == move.fn_start_line);
+                    // Check the level of indentation of the function
+                    var indent_lvl: usize = 0;
+                    const start_line = lines.getAt(getIdxOfLineNum(lines.*, move.fn_start_line).?).?;
+                    while (start_line.chars[indent_lvl] == ' ') {
+                        indent_lvl += 1;
+                    }
+                    while (line_it != null and line_it.?.value.num <= move.fn_end_line) {
+                        std.debug.print("appending line ({d}): {s}\n", .{ line_it.?.value.num, line_it.?.value.chars });
+                        // Build a new line with n characters removed from the indent level
+                        try new_lines.append(allocator, .{
+                            .num = line_it.?.value.num,
+                            .chars = line_it.?.value.chars[indent_lvl..],
+                        });
+                        const line_idx: usize = lines.getIdxOf(&line_it.?.value).?;
+                        line_it = line_it.?.next;
+                        try lines.removeAt(allocator, line_idx);
+                    }
+                    changes_head = change.next;
+                    continue;
+                },
+                .instance => {
+                    std.debug.print("changes_head is 'instance'\n", .{});
+                },
+                .namespace => {
+                    std.debug.print("changes_head is 'namespace'\n", .{});
+                },
+            }
+        }
+        try new_lines.append(allocator, line.value);
+        line_it = line.next;
+    }
 
     // Now we build up the output string from all the lines
-    var line_it = lines.head;
+    line_it = new_lines.head;
     var file: []u8 = undefined;
     var i: usize = 0;
     while (line_it) |line| {
@@ -230,9 +327,11 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList
 }
 
 pub fn printChanges(self: *Self) void {
-    for (self.changes.items, 0..) |change, i| {
-        std.debug.print("changes[{d}]: {s}: {{\n", .{ i, @tagName(change) });
-        switch (change) {
+    var i: usize = 0;
+    var change_maybe = self.changes.head;
+    while (change_maybe) |change| {
+        std.debug.print("changes[{d}]: {s}: {{\n", .{ i, @tagName(change.value) });
+        switch (change.value) {
             .move => |move| {
                 std.debug.print("    fn_start_line: {d},\n", .{move.fn_start_line});
                 std.debug.print("    fn_end_line: {d},\n", .{move.fn_end_line});
@@ -243,6 +342,8 @@ pub fn printChanges(self: *Self) void {
             .namespace => {},
         }
         std.debug.print("}}\n", .{});
+        i += 1;
+        change_maybe = change.next;
     }
 }
 
@@ -278,4 +379,17 @@ pub fn createHash(input: []const u8, hash: *[8]u8) void {
 
         seed = pos_hash;
     }
+}
+
+fn getIdxOfLineNum(lines: SinglyLinkedList(Line), line_num: usize) ?usize {
+    var line_idx: usize = 0;
+    var line_it = lines.head;
+    while (line_it) |line| {
+        if (line.value.num == line_num) {
+            return line_idx;
+        }
+        line_it = line.next;
+        line_idx += 1;
+    }
+    return null;
 }
