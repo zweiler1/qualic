@@ -108,17 +108,24 @@ pub const Token = struct {
     lexeme: []const u8,
 };
 
+// The input of the lexer, it does not own it's input
+input: []const u8,
+
+// A list of all tokens this lexer has created from it's input
 tokens: std.ArrayList(Token),
 
-pub const empty: Self = .{
-    .tokens = .empty,
-};
+pub fn init(input: []const u8) Self {
+    return .{
+        .input = input,
+        .tokens = .empty,
+    };
+}
 
 pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
     self.tokens.clearAndFree(allocator);
 }
 
-pub fn tokenize(self: *Self, input: []const u8, allocator: std.mem.Allocator) !void {
+pub fn tokenize(self: *Self, allocator: std.mem.Allocator) !void {
     if (self.tokens.items.len > 0) {
         // If this lexer already contains tokens we do not re-tokenize the input
         // Only if the lexer does not contain any elements, e.g. it's "empty" do we tokenize the input
@@ -128,111 +135,109 @@ pub fn tokenize(self: *Self, input: []const u8, allocator: std.mem.Allocator) !v
     var i: usize = 0;
     var line: usize = 1;
     var line_start: usize = 0;
-    while (i < input.len) {
-        switch (input[i]) {
+    while (i < self.input.len) {
+        switch (self.input[i]) {
             else => {
                 // Skip spaces, crash on everything else until now to detect unhandled tokens
-                std.debug.assert(input[i] == ' ');
+                std.debug.assert(self.input[i] == ' ');
             },
             // other tokens
-            '#' => ignoreRestOfLine(input, &i, &line, &line_start),
+            '#' => ignoreRestOfLine(self.input, &i, &line, &line_start),
             '\n' => {
-                try self.addToken(allocator, input, &i, line, line_start, .eol, 1);
+                try self.addToken(allocator, &i, line, line_start, .eol, 1);
                 line += 1;
                 line_start = i + 1;
             },
             // identifier
             'a'...'z', 'A'...'Z', '_' => {
-                try self.addIdentifierOrKeyword(allocator, input, &i, line, line_start);
+                try self.addIdentifierOrKeyword(allocator, &i, line, line_start);
             },
             // string_literal,
             '"' => {
                 // Skip the '"'
                 i += 1;
                 var lit_end: usize = i;
-                while (input[lit_end] != '"' or input[lit_end - 1] == '\\') {
+                while (self.input[lit_end] != '"' or self.input[lit_end - 1] == '\\') {
                     lit_end += 1;
                 }
-                try self.addToken(allocator, input, &i, line, line_start, .string_literal, lit_end - i + 1);
+                try self.addToken(allocator, &i, line, line_start, .string_literal, lit_end - i + 1);
             },
             '\'' => {
                 var lit_end: usize = i;
-                while (input[lit_end] != '\'' and input[lit_end] != '\\') {
+                while (self.input[lit_end] != '\'' and self.input[lit_end] != '\\') {
                     lit_end += 1;
                 }
-                try self.addToken(allocator, input, &i, line, line_start, .char_literal, lit_end - i + 1);
+                try self.addToken(allocator, &i, line, line_start, .char_literal, lit_end - i + 1);
             },
             // number_literal,
             '0'...'9' => {
                 // Number literals can start with 0b, 0x, 0o etc and end with l, ul, f, d etc
             },
             // operators
-            '(' => try self.addToken(allocator, input, &i, line, line_start, .l_paren, 1),
-            ')' => try self.addToken(allocator, input, &i, line, line_start, .r_paren, 1),
-            '[' => try self.addToken(allocator, input, &i, line, line_start, .l_bracket, 1),
-            ']' => try self.addToken(allocator, input, &i, line, line_start, .r_bracket, 1),
-            '{' => try self.addToken(allocator, input, &i, line, line_start, .l_brace, 1),
-            '}' => try self.addToken(allocator, input, &i, line, line_start, .r_brace, 1),
-            '.' => try self.addToken(allocator, input, &i, line, line_start, .dot, 1),
-            ',' => try self.addToken(allocator, input, &i, line, line_start, .comma, 1),
-            ':' => try self.addToken(allocator, input, &i, line, line_start, .colon, 1),
-            ';' => try self.addToken(allocator, input, &i, line, line_start, .semicolon, 1),
-            '&' => try self.addToken(allocator, input, &i, line, line_start, .@"and", 1),
-            '|' => try self.addToken(allocator, input, &i, line, line_start, .@"or", 1),
-            '!' => switch (input[i + 1]) {
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .neq, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .exclamation, 1),
+            '(' => try self.addToken(allocator, &i, line, line_start, .l_paren, 1),
+            ')' => try self.addToken(allocator, &i, line, line_start, .r_paren, 1),
+            '[' => try self.addToken(allocator, &i, line, line_start, .l_bracket, 1),
+            ']' => try self.addToken(allocator, &i, line, line_start, .r_bracket, 1),
+            '{' => try self.addToken(allocator, &i, line, line_start, .l_brace, 1),
+            '}' => try self.addToken(allocator, &i, line, line_start, .r_brace, 1),
+            '.' => try self.addToken(allocator, &i, line, line_start, .dot, 1),
+            ',' => try self.addToken(allocator, &i, line, line_start, .comma, 1),
+            ':' => try self.addToken(allocator, &i, line, line_start, .colon, 1),
+            ';' => try self.addToken(allocator, &i, line, line_start, .semicolon, 1),
+            '&' => try self.addToken(allocator, &i, line, line_start, .@"and", 1),
+            '|' => try self.addToken(allocator, &i, line, line_start, .@"or", 1),
+            '!' => switch (self.input[i + 1]) {
+                '=' => try self.addToken(allocator, &i, line, line_start, .neq, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .exclamation, 1),
             },
-            '+' => switch (input[i + 1]) {
-                '+' => try self.addToken(allocator, input, &i, line, line_start, .plus_plus, 2),
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .peq, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .plus, 1),
+            '+' => switch (self.input[i + 1]) {
+                '+' => try self.addToken(allocator, &i, line, line_start, .plus_plus, 2),
+                '=' => try self.addToken(allocator, &i, line, line_start, .peq, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .plus, 1),
             },
-            '-' => switch (input[i + 1]) {
-                '>' => try self.addToken(allocator, input, &i, line, line_start, .arrow, 2),
-                '-' => try self.addToken(allocator, input, &i, line, line_start, .minus_minus, 2),
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .mieq, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .minus, 1),
+            '-' => switch (self.input[i + 1]) {
+                '>' => try self.addToken(allocator, &i, line, line_start, .arrow, 2),
+                '-' => try self.addToken(allocator, &i, line, line_start, .minus_minus, 2),
+                '=' => try self.addToken(allocator, &i, line, line_start, .mieq, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .minus, 1),
             },
-            '*' => switch (input[i + 1]) {
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .mueq, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .mult, 1),
+            '*' => switch (self.input[i + 1]) {
+                '=' => try self.addToken(allocator, &i, line, line_start, .mueq, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .mult, 1),
             },
-            '/' => switch (input[i + 1]) {
+            '/' => switch (self.input[i + 1]) {
                 '/' => {
-                    ignoreRestOfLine(input, &i, &line, &line_start);
+                    ignoreRestOfLine(self.input, &i, &line, &line_start);
                 },
                 '*' => {
                     i += 2;
-                    ignoreUntil(input, &i, &line, &line_start, "*/");
+                    ignoreUntil(self.input, &i, &line, &line_start, "*/");
                 },
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .deq, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .slash, 1),
+                '=' => try self.addToken(allocator, &i, line, line_start, .deq, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .slash, 1),
             },
-            '%' => try self.addToken(allocator, input, &i, line, line_start, .mod, 1),
-            '<' => switch (input[i + 1]) {
-                '<' => try self.addToken(allocator, input, &i, line, line_start, .l_shift, 2),
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .le, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .lt, 1),
+            '%' => try self.addToken(allocator, &i, line, line_start, .mod, 1),
+            '<' => switch (self.input[i + 1]) {
+                '<' => try self.addToken(allocator, &i, line, line_start, .l_shift, 2),
+                '=' => try self.addToken(allocator, &i, line, line_start, .le, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .lt, 1),
             },
-            '>' => switch (input[i + 1]) {
-                '>' => try self.addToken(allocator, input, &i, line, line_start, .r_shift, 2),
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .ge, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .gt, 1),
+            '>' => switch (self.input[i + 1]) {
+                '>' => try self.addToken(allocator, &i, line, line_start, .r_shift, 2),
+                '=' => try self.addToken(allocator, &i, line, line_start, .ge, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .gt, 1),
             },
-            '=' => switch (input[i + 1]) {
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .eq, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .assign, 1),
+            '=' => switch (self.input[i + 1]) {
+                '=' => try self.addToken(allocator, &i, line, line_start, .eq, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .assign, 1),
             },
-            '^' => switch (input[i + 1]) {
-                '=' => try self.addToken(allocator, input, &i, line, line_start, .xeq, 2),
-                else => try self.addToken(allocator, input, &i, line, line_start, .xor, 1),
+            '^' => switch (self.input[i + 1]) {
+                '=' => try self.addToken(allocator, &i, line, line_start, .xeq, 2),
+                else => try self.addToken(allocator, &i, line, line_start, .xor, 1),
             },
         }
         i += 1;
-        if (i < input.len) {
-            continue;
-        } else {
+        if (i >= self.input.len) {
             try self.tokens.append(allocator, .{
                 .type = .eof,
                 .line = 0,
@@ -305,17 +310,16 @@ fn ignoreUntil(input: []const u8, i: *usize, line: *usize, line_start: *usize, m
 fn addIdentifierOrKeyword(
     self: *Self,
     allocator: std.mem.Allocator,
-    input: []const u8,
     i: *usize,
     line: usize,
     line_start: usize,
 ) !void {
     var ie: usize = i.*;
     // Get how long the identifier is
-    while (input[ie] >= 'a' and input[ie] <= 'z' or input[ie] >= 'A' and input[ie] <= 'Z' or input[ie] == '_') {
+    while (self.input[ie] >= 'a' and self.input[ie] <= 'z' or self.input[ie] >= 'A' and self.input[ie] <= 'Z' or self.input[ie] == '_') {
         ie += 1;
     }
-    const identifier: []const u8 = input[i.*..ie];
+    const identifier: []const u8 = self.input[i.*..ie];
     const token_type: ?TokenType = std.meta.stringToEnum(TokenType, identifier);
     try self.tokens.append(allocator, .{
         .type = token_type orelse .identifier,
@@ -329,7 +333,6 @@ fn addIdentifierOrKeyword(
 fn addToken(
     self: *Self,
     allocator: std.mem.Allocator,
-    input: []const u8,
     i: *usize,
     line: usize,
     line_start: usize,
@@ -341,7 +344,7 @@ fn addToken(
         .type = token_type,
         .line = line,
         .column = i.* - line_start,
-        .lexeme = input[i.* .. i.* + token_size],
+        .lexeme = self.input[i.* .. i.* + token_size],
     });
     if (token_size > 1) {
         i.* += token_size - 1;

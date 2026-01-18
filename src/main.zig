@@ -44,22 +44,9 @@ pub fn main() !void {
     }
     std.debug.print("------ Buffer Start ------\n{s}\n------ Buffer End ------\n\n", .{file_content});
 
-    // Split the preprocessed file by line into an array of slices
-    // var lines: std.ArrayList([]const u8) = .empty;
-    // defer lines.deinit(allocator);
-    //
-    // var it = std.mem.splitScalar(u8, buffer, '\n');
-    // while (it.next()) |chunk| {
-    //     try lines.append(allocator, chunk);
-    // }
-    //
-    // for (lines.items, 0..) |line, i| {
-    //     std.debug.print("{d} | {s}\n", .{ i + 1, line });
-    // }
-
-    var lexer: Lexer = .empty;
+    var lexer: Lexer = .init(file_content);
     defer lexer.deinit(allocator);
-    try lexer.tokenize(file_content, allocator);
+    try lexer.tokenize(allocator);
     std.debug.print("------ Token Stream Start ------\n", .{});
     try lexer.printTokens();
     std.debug.print("------ Token Stream End ----\n", .{});
