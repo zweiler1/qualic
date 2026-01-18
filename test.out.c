@@ -1,0 +1,23 @@
+#include <stdint.h>
+#include <stdio.h>
+
+typedef struct MyStruct {
+  int32_t x, y, z;
+} MyStruct;
+void MyStruct_print(MyStruct *self) asm("FILEHASH.MyStruct.print");
+void MyStruct_print(MyStruct *self) { // FILEHASH.MyStruct.print
+  printf("(%i, %i, %i)", self->x, self->y, self->z);
+}
+
+void somefunction() asm("FILEHASH.somefunction");
+void somefunction() { // FILEHASH.somefunction
+  printf("Hello, World!\n");
+}
+
+int main(void) {
+  somefunction();
+  MyStruct s = (MyStruct){.x = 10, .y = 20, .z = 30};
+  MyStruct_print(&s);
+  printf("\n");
+  return 0;
+}
