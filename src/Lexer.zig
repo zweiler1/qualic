@@ -160,18 +160,70 @@ pub fn tokenize(self: *Self, allocator: std.mem.Allocator) !void {
                 while (self.input[lit_end] != '"' or self.input[lit_end - 1] == '\\') {
                     lit_end += 1;
                 }
-                try self.addToken(allocator, &i, line, line_start, .string_literal, lit_end - i + 1);
+                try self.addToken(allocator, &i, line, line_start, .string_literal, lit_end - i);
+                // Skip the '"'
+                i += 1;
             },
             '\'' => {
+                // Skip the '
+                i += 1;
                 var lit_end: usize = i;
-                while (self.input[lit_end] != '\'' and self.input[lit_end] != '\\') {
+                while (self.input[lit_end] != '\'' or self.input[lit_end - 1] == '\\') {
                     lit_end += 1;
                 }
-                try self.addToken(allocator, &i, line, line_start, .char_literal, lit_end - i + 1);
+                try self.addToken(allocator, &i, line, line_start, .char_literal, lit_end - i);
+                // Skip the '
+                i += 1;
             },
-            // number_literal,
             '0'...'9' => {
-                // Number literals can start with 0b, 0x, 0o etc and end with l, ul, f, d etc
+                const start = i;
+
+                // Check if first digit is a 0, then hex, oct or binary values could follow
+                if (self.input[i] == '0' and i + 1 < self.input.len) {
+                    switch (self.input[i + 1]) {
+                        'x', 'X', 'b', 'B', 'o', 'O', '0'...'9' => i += 1,
+                        else => {},
+                    }
+                }
+                i += 1; // Consume first digit
+
+                // Consume integer digits
+                while (i < self.input.len and std.ascii.isDigit(self.input[i])) {
+                    i += 1;
+                }
+
+                // Optional decimal point and more digits
+                if (i < self.input.len and self.input[i] == '.') {
+                    i += 1;
+                    while (i < self.input.len and std.ascii.isDigit(self.input[i])) {
+                        i += 1;
+                    }
+                }
+
+                // Optional exponent (e/E/p/P for hex floats)
+                if (i < self.input.len and (self.input[i] == 'e' or self.input[i] == 'E' or self.input[i] == 'p' or self.input[i] == 'P')) {
+                    i += 1;
+                    if (i < self.input.len and (self.input[i] == '+' or self.input[i] == '-')) {
+                        i += 1;
+                    }
+                    while (i < self.input.len and std.ascii.isDigit(self.input[i])) {
+                        i += 1;
+                    }
+                }
+
+                // Optional suffixes (f/l/u/ll/ul etc., allow combinations like ull)
+                while (i < self.input.len) {
+                    const c = std.ascii.toLower(self.input[i]);
+                    if (c == 'f' or c == 'l' or c == 'u') {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                const len = i - start;
+                i = start;
+                try self.addToken(allocator, &i, line, line_start, .number_literal, len);
             },
             // operators
             '(' => try self.addToken(allocator, &i, line, line_start, .l_paren, 1),
@@ -237,16 +289,13 @@ pub fn tokenize(self: *Self, allocator: std.mem.Allocator) !void {
             },
         }
         i += 1;
-        if (i >= self.input.len) {
-            try self.tokens.append(allocator, .{
-                .type = .eof,
-                .line = 0,
-                .column = 0,
-                .lexeme = "",
-            });
-            break;
-        }
     }
+    try self.tokens.append(allocator, .{
+        .type = .eof,
+        .line = 0,
+        .column = 0,
+        .lexeme = "",
+    });
 }
 
 pub fn printTokens(self: *Self) !void {
