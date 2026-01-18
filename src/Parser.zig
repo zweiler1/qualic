@@ -46,7 +46,7 @@ pub const ChangeInstanceCall = struct {
 //     - Changing a namespaced call like `StructType.call(...)` to `StructType_call(...)`
 //     - Changing an instance call like `s.call(...)` to `StructType_call(&s, ...)`
 //     - (defer stuff is deferred)
-pub const Change = union {
+pub const Change = union(enum) {
     move: ChangeMoveFunction,
     namespace: ChangeNamespaceCall,
     instance: ChangeInstanceCall,
@@ -70,9 +70,112 @@ pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
 }
 
 pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
-    _ = self;
-    _ = allocator;
-    // TODO: actually parse all changes
+    const StructScope = struct {
+        name: []const u8,
+        definition_line: usize,
+        definition_column: usize,
+    };
+    var in_struct_scope: ?StructScope = null;
+
+    const StructFunctionScope = struct {
+        function_name: []const u8,
+        definition_line: usize,
+        definition_column: usize,
+    };
+    var in_function_scope: ?StructFunctionScope = null;
+
+    var struct_change_list: std.ArrayList(ChangeMoveFunction) = .empty;
+    defer struct_change_list.deinit(allocator);
+
+    for (self.tokens, 0..) |token, i| {
+        // Ignore all tokens which are not inside a struct scope
+        if (in_struct_scope == null and token.type != .@"struct") {
+            continue;
+        }
+        if (in_struct_scope == null) {
+            // ensure there are at least two more tokens: identifier and lbrace
+            std.debug.assert(token.type == .@"struct");
+
+            if (i + 2 > self.tokens.len) {
+                // not enough tokens to form "struct IDENT {"
+                continue;
+            }
+
+            // Look at the next two tokens
+            if (self.tokens[i + 1].type != .identifier) {
+                // It's not a named struct definition
+                continue;
+            }
+            if (self.tokens[i + 2].type != .l_brace) {
+                // It's not a definition, but maybe just a variable declaration like `struct Type s;`
+                continue;
+            }
+
+            in_struct_scope = StructScope{
+                .name = self.tokens[i + 1].lexeme,
+                .definition_line = token.line,
+                .definition_column = token.column,
+            };
+            continue;
+        }
+        // We now definitely are inside a struct, now we search for a function scope within the struct
+        // If we came to a r_brace then the struct scope ends
+        if (token.type == .r_brace) {
+            if (in_function_scope != null) {
+                // We exit the current function scope *inside* a struct scope. This means that we have
+                // found the "full" function which needs to be moved out of the struct scope. We can add
+                // the change function here, but we need to add it to a local list first. When we exit
+                // the struct we can tell the change where it needs to go, this is why we need to store
+                // it in it's own list first.
+                std.debug.assert(in_struct_scope != null);
+                try struct_change_list.append(allocator, .{
+                    .fn_start_line = in_function_scope.?.definition_line,
+                    .fn_end_line = token.line,
+                    .struct_type_name = in_struct_scope.?.name,
+                    .struct_end_line = 0, // Unknown until now
+                });
+                in_function_scope = null;
+                continue;
+            }
+            if (in_struct_scope != null) {
+                // We exit the struct scope, so we need to go through all the function changes until now
+                // and "tell" them where they should be inserted at, namely at the end of the struct scope,
+                // so right where we are *now*.
+                // We also add the changes to the global change list
+                for (struct_change_list.items) |*change| {
+                    change.struct_end_line = token.line;
+                    try self.changes.append(allocator, .{ .move = change.* });
+                }
+                struct_change_list.clearAndFree(allocator);
+                in_struct_scope = null;
+                continue;
+            }
+            // We should either be in a struct or in a function definition so this case should not happen
+            std.debug.assert(false);
+        }
+        if (in_function_scope == null) {
+            // Check if we now enter a function scope. We need to skip the return type and skip forward
+            // until we reach the pattern `identifier(`. When we reached that pattern then we are at the
+            // beginning of a function definition. This means that this whole line is assumed to be the
+            // function definition line. Inside a struct there are no function calls normally, so this
+            // is fine for now.
+            if (token.type != .identifier) {
+                continue;
+            }
+            std.debug.assert(i + 1 < self.tokens.len);
+            if (self.tokens[i + 1].type != .l_paren) {
+                // Not a call definition
+                continue;
+            }
+            std.debug.print("CALL IN STRUCT: {s}\n", .{token.lexeme});
+            in_function_scope = StructFunctionScope{
+                .function_name = token.lexeme,
+                .definition_line = token.line,
+                .definition_column = token.column,
+            };
+        }
+        // We are inside a function scope, for now we simply do nothing in here
+    }
 }
 
 pub fn apply(self: *Self) []const u8 {

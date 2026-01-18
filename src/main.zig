@@ -65,4 +65,23 @@ pub fn main() !void {
     var parser: Parser = .init(lexer.tokens.items);
     defer parser.deinit(allocator);
     try parser.parse(allocator);
+
+    for (parser.changes.items, 0..) |change, i| {
+        std.debug.print("changes[{d}]: {s}: {{\n", .{ i, @tagName(change) });
+        switch (change) {
+            .move => |move| {
+                std.debug.print("\tfn_start_line: {d},\n", .{move.fn_start_line});
+                std.debug.print("\tfn_end_line: {d},\n", .{move.fn_end_line});
+                std.debug.print("\tstruct_end_line: {d},\n", .{move.struct_end_line});
+                std.debug.print("\tstruct_type_name: {s}\n", .{move.struct_type_name});
+            },
+            .instance => {},
+            .namespace => {},
+        }
+        std.debug.print("}}\n", .{});
+    }
+
+    var hash: [8]u8 = undefined;
+    Parser.createHash("test.in.qlc", &hash);
+    std.debug.print("hash: {s}\n", .{hash});
 }
