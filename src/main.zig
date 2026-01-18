@@ -58,6 +58,7 @@ pub fn main() !void {
     // }
 
     var lexer: Lexer = .empty;
+    defer lexer.deinit(allocator);
     try lexer.tokenize(file_content, allocator);
     std.debug.print("------ Token Stream Start ------\n", .{});
     try lexer.printTokens();

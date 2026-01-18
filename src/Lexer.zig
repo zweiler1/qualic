@@ -114,6 +114,10 @@ pub const empty: Self = .{
     .tokens = .empty,
 };
 
+pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+    self.tokens.clearAndFree(allocator);
+}
+
 pub fn tokenize(self: *Self, input: []const u8, allocator: std.mem.Allocator) !void {
     if (self.tokens.items.len > 0) {
         // If this lexer already contains tokens we do not re-tokenize the input
