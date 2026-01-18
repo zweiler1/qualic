@@ -240,6 +240,46 @@ pub fn tokenize(self: *Self, input: []const u8, allocator: std.mem.Allocator) !v
     }
 }
 
+pub fn printTokens(self: *Self) !void {
+    // First pass: compute max widths
+    var max_pos: usize = 0;
+    var max_type: usize = 0;
+    var max_lex: usize = 0;
+
+    // format "line:col" into a small stack buffer to measure length
+    for (self.tokens.items) |token| {
+        var tmp_buf: [32]u8 = undefined;
+        const pos = try std.fmt.bufPrint(&tmp_buf, "{d}:{d}", .{ token.line, token.column });
+        if (pos.len > max_pos) max_pos = pos.len;
+
+        const tname = @tagName(token.type);
+        if (tname.len > max_type) max_type = tname.len;
+
+        if (token.lexeme.len > max_lex) max_lex = token.lexeme.len;
+    }
+
+    for (self.tokens.items) |token| {
+        var pos_buf: [32]u8 = undefined;
+        const pos = try std.fmt.bufPrint(&pos_buf, "{d}:{d}", .{ token.line, token.column });
+
+        // use named fields so we can pass the runtime width values:
+        // format string:
+        //   {[pos]s:<[pos_w]}   => left-align pos in width pos_w
+        //   {[type]s:<[type_w]} => left-align type in width type_w
+        //   {[lex]s}            => lexeme as-is
+        std.debug.print(
+            "{[pos]s:<[pos_w]} | {[type]s:<[type_w]} | {[lex]s}\n",
+            .{
+                .pos = pos,
+                .pos_w = max_pos,
+                .type = @tagName(token.type),
+                .type_w = max_type,
+                .lex = token.lexeme,
+            },
+        );
+    }
+}
+
 fn ignoreRestOfLine(input: []const u8, i: *usize, line: *usize, line_start: *usize) void {
     while (input[i.*] != '\n') {
         i.* += 1;

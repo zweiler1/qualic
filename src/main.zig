@@ -59,48 +59,7 @@ pub fn main() !void {
 
     var lexer: Lexer = .empty;
     try lexer.tokenize(file_content, allocator);
-
-    // First pass: compute max widths
-    var max_pos: usize = 0;
-    var max_type: usize = 0;
-    var max_lex: usize = 0;
-
-    for (lexer.tokens.items) |token| {
-        // format "line:col" into a small stack buffer to measure length
-        var tmp_buf: [32]u8 = undefined;
-        const pos = try std.fmt.bufPrint(&tmp_buf, "{d}:{d}", .{ token.line, token.column });
-        if (pos.len > max_pos) max_pos = pos.len;
-
-        const tname = @tagName(token.type);
-        if (tname.len > max_type) max_type = tname.len;
-
-        if (token.lexeme.len > max_lex) max_lex = token.lexeme.len;
-    }
-
-    // Header
     std.debug.print("------ Token Stream Start ------\n", .{});
-
-    // Second pass: print each line using dynamic width via named args
-    for (lexer.tokens.items) |token| {
-        var pos_buf: [32]u8 = undefined;
-        const pos = try std.fmt.bufPrint(&pos_buf, "{d}:{d}", .{ token.line, token.column });
-
-        // use named fields so we can pass the runtime width values:
-        // format string:
-        //   {[pos]s:<[pos_w]}   => left-align pos in width pos_w
-        //   {[type]s:<[type_w]} => left-align type in width type_w
-        //   {[lex]s}            => lexeme as-is
-        std.debug.print(
-            "{[pos]s:<[pos_w]} | {[type]s:<[type_w]} | {[lex]s}\n",
-            .{
-                .pos = pos,
-                .pos_w = max_pos,
-                .type = @tagName(token.type),
-                .type_w = max_type,
-                .lex = token.lexeme,
-            },
-        );
-    }
-
+    try lexer.printTokens();
     std.debug.print("------ Token Stream End ----\n", .{});
 }
