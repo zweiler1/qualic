@@ -1,8 +1,26 @@
 const std = @import("std");
 
 const Lexer = @import("Lexer.zig");
+const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
 
 const Self = @This();
+
+// A line is simple, it has a number and it owns a slice of characters in that line
+pub const Line = struct {
+    num: usize,
+    chars: []const u8,
+
+    pub fn deinit(self: *Line, allocator: std.mem.Allocator) void {
+        allocator.free(self.chars);
+    }
+
+    pub fn clone(self: *const Line, allocator: std.mem.Allocator) anyerror!Line {
+        return .{
+            .num = self.num,
+            .chars = try allocator.dupe(u8, self.chars),
+        };
+    }
+};
 
 // The 'ChangeMoveFunction' change moves a function from within a struct body after it, for this it
 // needs to know where the function starts and ends respectively. For now we only have full lines
@@ -177,10 +195,15 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
     }
 }
 
-pub fn apply(self: *Self) []const u8 {
+pub fn apply(self: *Self, lines: *SinglyLinkedList(Line)) []const u8 {
     _ = self;
-    // TODO: apply all the collected changes from the first stage
-    // We first apply the smaller changes like the call changes and then we apply the move changes
+    // For now only print all the lines
+    var line_it = lines.head;
+    while (line_it) |line| {
+        std.debug.print("line[{d}]: {s}\n", .{ line.value.num, line.value.chars });
+        line_it = line.next;
+    }
+    return "";
 }
 
 pub fn printChanges(self: *Self) void {

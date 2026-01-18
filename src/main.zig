@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
+const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
 
 // 1. Run the pre-processor stage
 //      clang -E -x c -P test.in.qlc -o test.middle.qlc
@@ -60,9 +61,22 @@ pub fn main() !void {
     std.debug.print("\n------ Changes Start ------\n", .{});
     parser.printChanges();
     std.debug.print("------ Changes End ----\n", .{});
+
+    // Split the preprocessed file by line into an array of lines
+    var lines: SinglyLinkedList(Parser.Line) = .{};
+    defer lines.clearAndFree(allocator);
+    var it = std.mem.splitScalar(u8, file_content, '\n');
+    var line_id: usize = 0;
+    while (it.next()) |line| {
+        // The line itself duplicates the line chars in it's "clone" call
+        try lines.append(allocator, .{
+            .num = line_id,
+            .chars = line,
+        });
+        line_id += 1;
     }
 
-    var hash: [8]u8 = undefined;
-    Parser.createHash("test.in.qlc", &hash);
-    std.debug.print("hash: {s}\n", .{hash});
+    // Apply all the changes and get the combined file back
+    const transpiled_file: []const u8 = parser.apply(&lines);
+    _ = transpiled_file;
 }
