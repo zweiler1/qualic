@@ -300,6 +300,8 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
         // statemnets will just be inserted right before the return statement if we come across one.
         // TODO: Implement the re-writing of return statements
         scope_level: usize,
+        // The indentation level of this defer statement's scope
+        indent_lvl: usize,
     };
     var defer_statements: std.ArrayList(DeferStatement) = .empty;
     defer defer_statements.deinit(allocator);
@@ -333,6 +335,7 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             try defer_statements.append(allocator, .{
                 .line = token.line,
                 .scope_level = scope_level,
+                .indent_lvl = token.column,
             });
             skip_until_end_of_line = token.line;
             continue;
@@ -393,7 +396,7 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                     try self.changes.append(allocator, .{
                         .defer_s = .{
                             .line = token.line,
-                            .indentation = 0,
+                            .indentation = defer_statement.indent_lvl,
                             .content_line = defer_statement.line,
                         },
                     });
@@ -559,6 +562,39 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         });
     }
 
+    // Collect & remove all defer lines. We do this by mapping the original line number to the
+    // defer content string directly. This means that we remove all the lines in which the defer
+    // statements were written directly from the input
+    var defer_contents: std.AutoHashMap(usize, []const u8) = .init(allocator);
+    defer defer_contents.deinit();
+    defer {
+        var defer_iter = defer_contents.iterator();
+        while (defer_iter.next()) |content| {
+            allocator.free(content.value_ptr.*);
+        }
+    }
+    var changes_iter = self.changes.iter();
+    while (changes_iter.next()) |change| {
+        switch (change.*) {
+            .move => {},
+            .namespace => {},
+            .instance => {},
+            .defer_s => |defer_s| {
+                if (defer_contents.get(defer_s.content_line) == null) {
+                    // This content line has not been removed from the input yet
+                    const line_idx: usize = getIdxOfLineNum(lines, defer_s.content_line).?;
+                    const content_line = lines.getAt(line_idx).?;
+                    const line_tokens = self.getTokensOfLine(defer_s.content_line);
+                    std.debug.assert(line_tokens[0].type == .@"defer");
+                    const content_start = line_tokens[1].column;
+                    const line_content = content_line.chars[content_start..];
+                    try defer_contents.put(defer_s.content_line, try allocator.dupe(u8, line_content));
+                    try lines.removeAt(allocator, line_idx);
+                }
+            },
+        }
+    }
+
     // Apply all changes
     var new_lines: SinglyLinkedList(Line) = .{};
     defer new_lines.clearAndFree(allocator);
@@ -678,8 +714,24 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     changes_head = change.next;
                     continue;
                 },
-                .defer_s => {
-                    std.debug.print("Applying defer_s...\n", .{});
+                .defer_s => |defer_s| {
+                    if (line.value.num != defer_s.line) {
+                        break :blk;
+                    }
+                    const content = defer_contents.get(defer_s.content_line).?;
+                    const content_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{[c]s}", .{
+                        .s = "",
+                        .n = defer_s.indentation,
+                        .c = content,
+                    });
+                    defer allocator.free(content_line);
+                    std.debug.print("Adding line: {s}\n", .{content_line});
+                    try new_lines.append(allocator, .{
+                        .num = line.value.num,
+                        .chars = content_line,
+                    });
+                    changes_head = change.next;
+                    continue;
                 },
             }
         }
