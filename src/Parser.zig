@@ -146,7 +146,8 @@ pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
 
 pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
     try self.parseStructFunctions(allocator);
-    try self.parseCalls(allocator);
+    try self.parseNamespaces(allocator);
+    try self.parseInstances(allocator);
 }
 
 pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
@@ -235,7 +236,7 @@ pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
     }
 }
 
-pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
+pub fn parseNamespaces(self: *Self, allocator: std.mem.Allocator) !void {
     // The begin token of the current function we are in. Needed for the instance calls since they
     // need to resolve types. If it's null it means we are not inside a function definition right
     // now, if it has a value it's the index of the token in the lexer.tokens.items slice where the
@@ -281,6 +282,11 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             },
         });
     }
+}
+
+pub fn parseInstances(self: *Self, allocator: std.mem.Allocator) !void {
+    _ = self;
+    _ = allocator;
 }
 
 /// Caller owns the returned string
@@ -371,7 +377,6 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     }
                     // Modify the input line directly without adding it to the output. This way other
                     // changes to this line (for example from the `instance`) can still take effect.
-                    std.debug.print("changes_head is 'namespace': {s}\n", .{line.value.chars});
                     line.value.chars[namespace.column] = '_';
                     changes_head = change.next;
                     continue;
