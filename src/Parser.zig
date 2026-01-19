@@ -8,7 +8,7 @@ const Self = @This();
 // A line is simple, it has a number and it owns a slice of characters in that line
 pub const Line = struct {
     num: usize,
-    chars: []const u8,
+    chars: []u8,
 
     pub fn deinit(self: *Line, allocator: std.mem.Allocator) void {
         allocator.free(self.chars);
@@ -125,18 +125,23 @@ lexer: Lexer,
 // A list of all changes which need to be done to the source code
 changes: SinglyLinkedList(Change),
 
+// A list of all struct types which contain functions
+structs_with_fns: std.StringHashMap(void),
+
 pub fn init(allocator: std.mem.Allocator, file_content: []const u8) !Self {
     var lexer: Lexer = .init(file_content);
     try lexer.tokenize(allocator);
     return .{
         .lexer = lexer,
         .changes = .{},
+        .structs_with_fns = .init(allocator),
     };
 }
 
 pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
     self.lexer.deinit(allocator);
     self.changes.clearAndFree(allocator);
+    self.structs_with_fns.deinit();
 }
 
 pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
@@ -226,12 +231,56 @@ pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
             .struct_type_name = in_struct_scope.?.name,
             .struct_end_line = 0, // Unknown until now
         });
+        try self.structs_with_fns.put(in_struct_scope.?.name, {});
     }
 }
 
 pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
-    _ = self;
-    _ = allocator;
+    // The begin token of the current function we are in. Needed for the instance calls since they
+    // need to resolve types. If it's null it means we are not inside a function definition right
+    // now, if it has a value it's the index of the token in the lexer.tokens.items slice where the
+    // function starts at.
+    // var function_begin: ?usize = null;
+
+    const tokens = self.lexer.tokens.items;
+    for (tokens, 0..) |token, i| {
+        // For now we search only for the pattern `identifier.identifier(` where the first
+        // identifier is one of the structs containing function definitions. This also means
+        // that qualic does not resolve things like `MyStruct.call(` when `MyStruct` does not
+        // contain any function definitions at all.
+        if (i + 3 > tokens.len) {
+            // Skip the tokens at the end
+            continue;
+        }
+        if (token.type != .identifier) {
+            // Skip if this token is not an identifier
+            continue;
+        }
+        if (self.structs_with_fns.getKey(token.lexeme) == null) {
+            // This identifier is not a known struct type
+            continue;
+        }
+        if (tokens[i + 1].type != .dot) {
+            // The struct type is not followed by a dot
+            continue;
+        }
+        if (tokens[i + 2].type != .identifier) {
+            // The struct type is not followed ba a `.identifier`
+            continue;
+        }
+        if (tokens[i + 3].type != .l_paren) {
+            // The struct type is not followed by a `.identifier(`
+            continue;
+        }
+        // The struct type is now definitely followed by a call, this means that we can add the
+        // instance change where the `.` will be changed to an `_`.
+        try self.changes.append(allocator, .{
+            .namespace = .{
+                .column = tokens[i + 1].column,
+                .line = tokens[i + 1].line,
+            },
+        });
+    }
 }
 
 /// Caller owns the returned string
@@ -242,9 +291,11 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
     var line_id: usize = 1;
     while (it.next()) |line| : (line_id += 1) {
         // The line itself duplicates the line chars in it's "clone" call
+        const line_cpy: []u8 = try allocator.dupe(u8, line);
+        defer allocator.free(line_cpy);
         try lines.append(allocator, .{
             .num = line_id,
-            .chars = line,
+            .chars = line_cpy,
         });
     }
 
@@ -280,7 +331,6 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                         indent_lvl += 1;
                     }
                     std.debug.assert(line.value.num == move.fn_line);
-                    std.debug.assert(line_it != null);
                     // Okay now we need to find and replace the function name with the struct type
                     // followed by an underscore and then the function name like `MyStruct_function`.
                     // And then we need to do the same but also add the `asm("...")` line afterwards,
@@ -309,17 +359,25 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                         .chars = formatted_definition_line[indent_lvl..],
                     });
                     // Remove the function definition line from the input so that it id not added twice
-                    const line_idx: usize = lines.getIdxOf(&line_it.?.value).?;
-                    line_it = line_it.?.next;
+                    const line_idx: usize = lines.getIdxOf(&line.value).?;
+                    line_it = line.next;
                     try lines.removeAt(allocator, line_idx);
+                    changes_head = change.next;
+                    continue;
+                },
+                .namespace => |namespace| {
+                    if (line.value.num != namespace.line) {
+                        break :blk;
+                    }
+                    // Modify the input line directly without adding it to the output. This way other
+                    // changes to this line (for example from the `instance`) can still take effect.
+                    std.debug.print("changes_head is 'namespace': {s}\n", .{line.value.chars});
+                    line.value.chars[namespace.column] = '_';
                     changes_head = change.next;
                     continue;
                 },
                 .instance => {
                     std.debug.print("changes_head is 'instance'\n", .{});
-                },
-                .namespace => {
-                    std.debug.print("changes_head is 'namespace'\n", .{});
                 },
             }
         }
@@ -329,24 +387,6 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
 
     // Now we build up the output string from all the lines
     line_it = new_lines.head;
-    // var file: []u8 = undefined;
-    // var i: usize = 0;
-    // while (line_it) |line| {
-    //     if (i == 0) {
-    //         file = try allocator.alloc(u8, line.value.chars.len);
-    //         @memmove(file[0..], line.value.chars[0..]);
-    //     } else {
-    //         const old_len: usize = file.len;
-    //         file = try allocator.realloc(file, old_len + line.value.chars.len + 1);
-    //         file[old_len] = '\n';
-    //         std.debug.assert(file.len - old_len - 1 == line.value.chars.len);
-    //         @memmove(file[old_len + 1 ..], line.value.chars[0..]);
-    //     }
-    //     line_it = line.next;
-    //     i += 1;
-    // }
-    // return file;
-
     var writer_allocating: std.Io.Writer.Allocating = .init(allocator);
     defer writer_allocating.deinit();
     const writer = &writer_allocating.writer;
@@ -371,8 +411,11 @@ pub fn printChanges(self: *Self) void {
                 std.debug.print("    struct_end_line: {d},\n", .{move.struct_end_line});
                 std.debug.print("    struct_type_name: \"{s}\"\n", .{move.struct_type_name});
             },
+            .namespace => |namespace| {
+                std.debug.print("    line: {d},\n", .{namespace.line});
+                std.debug.print("    column: {d},\n", .{namespace.column});
+            },
             .instance => {},
-            .namespace => {},
         }
         std.debug.print("}}\n", .{});
         i += 1;
