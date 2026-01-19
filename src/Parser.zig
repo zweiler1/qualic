@@ -61,7 +61,6 @@ pub const ChangeNamespaceCallOrDefinition = struct {
 // instance call starts (line + column) and the name of the instance variable itself.
 pub const ChangeInstanceCall = struct {
     line: usize,
-    column: usize,
     type: []const u8,
     instance: []const u8,
     fn_name: []const u8,
@@ -112,7 +111,6 @@ pub const Change = union(enum) {
             .instance => |instance| .{
                 .instance = .{
                     .line = instance.line,
-                    .column = instance.column,
                     .type = try allocator.dupe(u8, instance.type),
                     .instance = try allocator.dupe(u8, instance.instance),
                     .fn_name = try allocator.dupe(u8, instance.fn_name),
@@ -355,7 +353,6 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             try self.changes.append(allocator, .{
                 .instance = .{
                     .line = token.line,
-                    .column = token.column,
                     .type = global_var_type,
                     .instance = token.lexeme,
                     .fn_name = tokens[i + 2].lexeme,
@@ -369,7 +366,6 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                 try self.changes.append(allocator, .{
                     .instance = .{
                         .line = token.line,
-                        .column = token.column,
                         .type = scope_var.type,
                         .instance = scope_var.name,
                         .fn_name = tokens[i + 2].lexeme,
@@ -603,7 +599,6 @@ pub fn printChanges(self: *Self) void {
             },
             .instance => |instance| {
                 std.debug.print("    line: {d},\n", .{instance.line});
-                std.debug.print("    column: {d},\n", .{instance.column});
                 std.debug.print("    type: {s},\n", .{instance.type});
                 std.debug.print("    name: \"{s}\",\n", .{instance.instance});
                 std.debug.print("    fn_name: \"{s}\",\n", .{instance.fn_name});
