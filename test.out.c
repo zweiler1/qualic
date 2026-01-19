@@ -16,9 +16,7 @@ void MyStruct_print(MyStruct *self) {
   printf("(%i, %i, %i), %s\n", self->x, self->y, self->z, self->string);
 }
 
-void MyStruct_deinit(MyStruct *self) {
-  free(self->string);
-}
+void MyStruct_deinit(MyStruct *self) { free(self->string); }
 
 void someFunction() { printf("Hello, World!\n"); }
 
