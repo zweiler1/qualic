@@ -14,13 +14,15 @@ void MyStruct_print(MyStruct *self) {
   printf("(%i, %i, %i)\n", self->x, self->y, self->z);
 }
 
-void somefunction() { printf("Hello, World!\n"); }
+void someFunction() { printf("Hello, World!\n"); }
 
 int main(void) {
   MyStruct *sp = (MyStruct *)malloc(sizeof(MyStruct));
 
   if (false) {
     // Defer stuff should be inserted here
+    printf("should run first\n");
+    printf("should run second\n");
     free(sp);
     return 0;
   }
@@ -33,12 +35,14 @@ int main(void) {
     printf("This prints second!\n");
   }
 
-  somefunction();
-  MyStruct s = (MyStruct){.x = 10, .y = 20, .z = 30, .c = '\n'};
+  someFunction();
+  MyStruct s = (MyStruct){.x = 0b10, .y = 0xFF, .z = 0o30, .c = '\n'};
   MyStruct_print(&s);
   MyStruct_print(&s);
 
   // Defer stuff should be inserted here
+  printf("should run first\n");
+  printf("should run second\n");
   free(sp);
   return 0;
 }

@@ -19,6 +19,8 @@ void someFunction() { printf("Hello, World!\n"); }
 int main(void) {
   MyStruct *sp = (MyStruct *)malloc(sizeof(MyStruct));
   defer free(sp);
+  defer printf("should run second\n");
+  defer printf("should run first\n");
 
   if (false) {
     // Defer stuff should be inserted here

@@ -22,6 +22,7 @@ pub fn main() !void {
 
     const input = "test.in.qlc";
     const middle = "test.middle.qlc";
+    const output = "test.out.c";
     var preproc: std.process.Child = .init(&[_][]const u8{
         "clang",
         "-E",
@@ -62,4 +63,16 @@ pub fn main() !void {
     const parser_output: []const u8 = try parser.apply(allocator);
     defer allocator.free(parser_output);
     std.debug.print("\n------ Parser Output Start ------\n{s}------ Parser Output End ------\n", .{parser_output});
+
+    // Write the parser output into the output file
+    const out_file = std.fs.cwd().createFile(output, .{ .truncate = true }) catch |err| {
+        std.debug.print("Failed to create file: {}\n", .{err});
+        return err;
+    };
+    defer out_file.close();
+    var buf: [1024]u8 = undefined;
+    var file_writer = out_file.writer(&buf);
+    var writer = &file_writer.interface;
+    try writer.writeAll(parser_output);
+    try writer.flush();
 }
