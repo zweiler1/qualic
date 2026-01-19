@@ -363,17 +363,17 @@ fn addIdentifierOrKeyword(
     line: usize,
     line_start: usize,
 ) !void {
-    var ie: usize = i.*;
+    var start: usize = i.*;
     // Get how long the identifier is
     // Skip the first character which is only allowed to be one of these
-    if (self.input[ie] >= 'a' and self.input[ie] <= 'z' or self.input[ie] >= 'A' and self.input[ie] <= 'Z' or self.input[ie] == '_') {
-        ie += 1;
+    if (self.input[start] >= 'a' and self.input[start] <= 'z' or self.input[start] >= 'A' and self.input[start] <= 'Z' or self.input[start] == '_') {
+        start += 1;
     }
     // Then skip all following characters which are allowed to contain numbers too
-    while (self.input[ie] >= 'a' and self.input[ie] <= 'z' or self.input[ie] >= 'A' and self.input[ie] <= 'Z' or self.input[ie] == '_' or self.input[ie] >= '0' and self.input[ie] <= '9') {
-        ie += 1;
+    while (self.input[start] >= 'a' and self.input[start] <= 'z' or self.input[start] >= 'A' and self.input[start] <= 'Z' or self.input[start] == '_' or self.input[start] >= '0' and self.input[start] <= '9') {
+        start += 1;
     }
-    const identifier: []const u8 = self.input[i.*..ie];
+    const identifier: []const u8 = self.input[i.*..start];
     const token_type: ?TokenType = std.meta.stringToEnum(TokenType, identifier);
     try self.tokens.append(allocator, .{
         .type = token_type orelse .identifier,
@@ -381,7 +381,7 @@ fn addIdentifierOrKeyword(
         .column = i.* - line_start,
         .lexeme = identifier,
     });
-    i.* = ie - 1;
+    i.* = start - 1;
 }
 
 fn addToken(

@@ -114,24 +114,43 @@ pub const Change = union(enum) {
     }
 };
 
-// A non-owning list of all tokens this parser works on
-tokens: []Lexer.Token,
+pub const ParseMode = enum {
+    struct_functions,
+    calls,
+};
+
+// This parser owns the lexer instance
+lexer: Lexer,
 
 // A list of all changes which need to be done to the source code
 changes: SinglyLinkedList(Change),
 
-pub fn init(tokens: []Lexer.Token) Self {
+// The mode in which we parse, e.g. which type of changes we collect
+parse_mode: ParseMode,
+
+pub fn init(allocator: std.mem.Allocator, file_content: []const u8, parse_mode: ParseMode) !Self {
+    var lexer: Lexer = .init(file_content);
+    try lexer.tokenize(allocator);
     return .{
-        .tokens = tokens,
+        .lexer = lexer,
         .changes = .{},
+        .parse_mode = parse_mode,
     };
 }
 
 pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+    self.lexer.deinit(allocator);
     self.changes.clearAndFree(allocator);
 }
 
 pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
+    switch (self.parse_mode) {
+        .struct_functions => try self.parseStructFunctions(allocator),
+        .calls => std.debug.print("TODO\n", .{}),
+    }
+}
+
+pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
     const StructScope = struct {
         name: []const u8,
         definition_line: usize,
@@ -149,7 +168,8 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
     var struct_change_list: std.ArrayList(ChangeMoveFunction) = .empty;
     defer struct_change_list.deinit(allocator);
 
-    for (self.tokens, 0..) |token, i| {
+    const tokens = self.lexer.tokens.items;
+    for (tokens, 0..) |token, i| {
         // Ignore all tokens which are not inside a struct scope
         if (in_struct_scope == null and token.type != .@"struct") {
             continue;
@@ -158,23 +178,23 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
             // ensure there are at least two more tokens: identifier and lbrace
             std.debug.assert(token.type == .@"struct");
 
-            if (i + 2 > self.tokens.len) {
+            if (i + 2 > tokens.len) {
                 // not enough tokens to form "struct IDENT {"
                 continue;
             }
 
             // Look at the next two tokens
-            if (self.tokens[i + 1].type != .identifier) {
+            if (tokens[i + 1].type != .identifier) {
                 // It's not a named struct definition
                 continue;
             }
-            if (self.tokens[i + 2].type != .l_brace) {
+            if (tokens[i + 2].type != .l_brace) {
                 // It's not a definition, but maybe just a variable declaration like `struct Type s;`
                 continue;
             }
 
             in_struct_scope = StructScope{
-                .name = self.tokens[i + 1].lexeme,
+                .name = tokens[i + 1].lexeme,
                 .definition_line = token.line,
                 .definition_column = token.column,
             };
@@ -224,8 +244,8 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
             if (token.type != .identifier) {
                 continue;
             }
-            std.debug.assert(i + 1 < self.tokens.len);
-            if (self.tokens[i + 1].type != .l_paren) {
+            std.debug.assert(i + 1 < tokens.len);
+            if (tokens[i + 1].type != .l_paren) {
                 // Not a call definition
                 continue;
             }
@@ -239,14 +259,27 @@ pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
     }
 }
 
-pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList(Line)) ![]const u8 {
+pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
+    var lines: SinglyLinkedList(Line) = .{};
+    defer lines.clearAndFree(allocator);
+    var it = std.mem.splitScalar(u8, self.lexer.input, '\n');
+    var line_id: usize = 1;
+    while (it.next()) |line| : (line_id += 1) {
+        // The line itself duplicates the line chars in it's "clone" call
+        try lines.append(allocator, .{
+            .num = line_id,
+            .chars = line,
+        });
+    }
+
     var new_lines: SinglyLinkedList(Line) = .{};
     defer new_lines.clearAndFree(allocator);
     var line_it = lines.head;
     // We take the first move change we can find and move all lines from the input to the
     // output until we reach the first move line
     var changes_head = self.changes.head;
-    var struct_end_added: std.StringHashMap(bool) = .init(allocator);
+    var struct_end_added: std.StringHashMap(void) = .init(allocator);
+    defer struct_end_added.deinit();
     while (line_it) |line| {
         if (changes_head) |change| {
             blk: switch (change.value) {
@@ -258,15 +291,15 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList
                     // then we need to first add the struct end line to the output lines and remove it from
                     // the input lines all together
                     if (struct_end_added.getKey(move.struct_type_name) == null) {
-                        const line_idx: usize = getIdxOfLineNum(lines.*, move.struct_end_line).?;
+                        const line_idx: usize = getIdxOfLineNum(lines, move.struct_end_line).?;
                         const end_line = lines.getAt(line_idx).?;
                         try new_lines.append(allocator, end_line.*);
                         try lines.removeAt(allocator, line_idx);
-                        try struct_end_added.put(move.struct_type_name, true);
+                        try struct_end_added.put(move.struct_type_name, {});
                     }
                     // Check the level of indentation of the function
                     var indent_lvl: usize = 0;
-                    const start_line = lines.getAt(getIdxOfLineNum(lines.*, move.fn_start_line).?).?;
+                    const start_line = lines.getAt(getIdxOfLineNum(lines, move.fn_start_line).?).?;
                     while (start_line.chars[indent_lvl] == ' ') {
                         indent_lvl += 1;
                     }
@@ -288,18 +321,19 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList
                     // Get the function name and get the new function name too
                     const new_fn_name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ move.struct_type_name, fn_name });
                     defer allocator.free(new_fn_name);
-                    const line_name_replaced: []u8 = try std.mem.replaceOwned(u8, allocator, start_line.chars, fn_name, new_fn_name);
+                    const line_name_replaced: []const u8 = try std.mem.replaceOwned(u8, allocator, start_line.chars, fn_name, new_fn_name);
                     defer allocator.free(line_name_replaced);
                     const last_character: u8 = line_name_replaced[line_name_replaced.len - 1];
                     std.debug.assert(last_character == '{' or last_character == ';');
                     // Now add the first line definition
                     var line_definition: []const u8 = try allocator.dupe(u8, line_name_replaced);
                     defer allocator.free(line_definition);
-                    line_definition = line_definition[0 .. line_definition.len - 1];
+                    var line_definition_trimmed = line_definition[0 .. line_definition.len - 1];
                     // Remove all whitespacing and then create the definition name
-                    line_definition = std.mem.trimEnd(u8, line_definition, " ");
+                    line_definition_trimmed = std.mem.trimEnd(u8, line_definition_trimmed, &std.ascii.whitespace);
                     const formatted_definition_line = try std.fmt.allocPrint(allocator, "{s} asm(\"{s}.{s}.{s}\");", .{
-                        line_definition,
+                        line_definition_trimmed,
+                        // TODO: Is the file hash even needed?
                         "FILE_HASH",
                         move.struct_type_name,
                         fn_name,
@@ -315,19 +349,18 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList
                             .num = start_line.num,
                             .chars = line_name_replaced[indent_lvl..],
                         });
-                    }
-
-                    // Skip the first line since it already has been added (twice)
-                    line_it = line_it.?.next;
-                    while (line_it != null and line_it.?.value.num <= move.fn_end_line) {
-                        // Build a new line with n characters removed from the indent level
-                        try new_lines.append(allocator, .{
-                            .num = line_it.?.value.num,
-                            .chars = line_it.?.value.chars[indent_lvl..],
-                        });
-                        const line_idx: usize = lines.getIdxOf(&line_it.?.value).?;
+                        // Skip the first line since it already has been added (twice)
                         line_it = line_it.?.next;
-                        try lines.removeAt(allocator, line_idx);
+                        while (line_it != null and line_it.?.value.num <= move.fn_end_line) {
+                            // Build a new line with n characters removed from the indent level
+                            try new_lines.append(allocator, .{
+                                .num = line_it.?.value.num,
+                                .chars = line_it.?.value.chars[indent_lvl..],
+                            });
+                            const line_idx: usize = lines.getIdxOf(&line_it.?.value).?;
+                            line_it = line_it.?.next;
+                            try lines.removeAt(allocator, line_idx);
+                        }
                     }
                     changes_head = change.next;
                     continue;
@@ -346,23 +379,33 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator, lines: *SinglyLinkedList
 
     // Now we build up the output string from all the lines
     line_it = new_lines.head;
-    var file: []u8 = undefined;
-    var i: usize = 0;
+    // var file: []u8 = undefined;
+    // var i: usize = 0;
+    // while (line_it) |line| {
+    //     if (i == 0) {
+    //         file = try allocator.alloc(u8, line.value.chars.len);
+    //         @memmove(file[0..], line.value.chars[0..]);
+    //     } else {
+    //         const old_len: usize = file.len;
+    //         file = try allocator.realloc(file, old_len + line.value.chars.len + 1);
+    //         file[old_len] = '\n';
+    //         std.debug.assert(file.len - old_len - 1 == line.value.chars.len);
+    //         @memmove(file[old_len + 1 ..], line.value.chars[0..]);
+    //     }
+    //     line_it = line.next;
+    //     i += 1;
+    // }
+    // return file;
+
+    var writer_allocating: std.Io.Writer.Allocating = .init(allocator);
+    const writer = &writer_allocating.writer;
     while (line_it) |line| {
-        if (i == 0) {
-            file = try allocator.alloc(u8, line.value.chars.len);
-            @memmove(file[0..], line.value.chars[0..]);
-        } else {
-            const old_len: usize = file.len;
-            file = try allocator.realloc(file, old_len + line.value.chars.len + 1);
-            file[old_len] = '\n';
-            std.debug.assert(file.len - old_len - 1 == line.value.chars.len);
-            @memmove(file[old_len + 1 ..], line.value.chars[0..]);
-        }
+        try writer.writeAll(line.value.chars);
+        try writer.writeByte('\n');
         line_it = line.next;
-        i += 1;
     }
-    return file;
+    try writer.flush();
+    return writer.buffered();
 }
 
 pub fn printChanges(self: *Self) void {
@@ -422,15 +465,15 @@ pub fn createHash(input: []const u8, hash: *[8]u8) void {
 
 fn getTokensOfLine(self: *Self, line_num: usize) []Lexer.Token {
     var i: usize = 0;
-    while (self.tokens[i].line < line_num) {
+    while (self.lexer.tokens.items[i].line < line_num) {
         i += 1;
     }
     const start: usize = i;
-    while (self.tokens[i].line == line_num) {
+    while (self.lexer.tokens.items[i].line == line_num) {
         i += 1;
     }
     std.debug.assert(start != i);
-    return self.tokens[start..i];
+    return self.lexer.tokens.items[start..i];
 }
 
 fn getIdxOfLineNum(lines: SinglyLinkedList(Line), line_num: usize) ?usize {

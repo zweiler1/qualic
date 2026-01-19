@@ -18,6 +18,7 @@ int main(void) {
   someFunction();
   MyStruct s = (MyStruct){.x = 0b10, .y = 0xFF, .z = 0o30, .c = '\n'};
   s.print();
+  MyStruct.print(&s);
   printf("\n");
   return 0;
 }

@@ -48,35 +48,25 @@ pub fn main() !void {
     }
     std.debug.print("------ Buffer Start ------\n{s}\n------ Buffer End ------\n", .{file_content});
 
-    var lexer: Lexer = .init(file_content);
-    defer lexer.deinit(allocator);
-    try lexer.tokenize(allocator);
-    std.debug.print("\n------ Token Stream Start ------\n", .{});
-    try lexer.printTokens();
-    std.debug.print("------ Token Stream End ----\n", .{});
-
-    var parser: Parser = .init(lexer.tokens.items);
-    defer parser.deinit(allocator);
-    try parser.parse(allocator);
-    std.debug.print("\n------ Changes Start ------\n", .{});
-    parser.printChanges();
-    std.debug.print("------ Changes End ----\n", .{});
-
-    // Split the preprocessed file by line into an array of lines
-    var lines: SinglyLinkedList(Parser.Line) = .{};
-    defer lines.clearAndFree(allocator);
-    var it = std.mem.splitScalar(u8, file_content, '\n');
-    var line_id: usize = 1;
-    while (it.next()) |line| {
-        // The line itself duplicates the line chars in it's "clone" call
-        try lines.append(allocator, .{
-            .num = line_id,
-            .chars = line,
-        });
-        line_id += 1;
-    }
-
+    // Resolve all functions within structs
+    var struct_parser: Parser = try .init(allocator, file_content, .struct_functions);
+    defer struct_parser.deinit(allocator);
+    try struct_parser.parse(allocator);
+    std.debug.print("\n------ Struct Parser Changes Start ------\n", .{});
+    struct_parser.printChanges();
+    std.debug.print("------ Struct Parser Changes End ------\n", .{});
     // Apply all the changes and get the combined file back
-    const transpiled_file: []const u8 = try parser.apply(allocator, &lines);
-    std.debug.print("\n------ Transpiled File Start ------\n{s}------ Transpiled File End ------\n", .{transpiled_file});
+    const struct_parser_output: []const u8 = try struct_parser.apply(allocator);
+    std.debug.print("\n------ Struct Parser Output Start ------\n{s}------ Struct Parser Output End ------\n", .{struct_parser_output});
+
+    // Resolve all calls within functions
+    var call_parser: Parser = try .init(allocator, struct_parser_output, .calls);
+    defer call_parser.deinit(allocator);
+    try call_parser.parse(allocator);
+    std.debug.print("\n------ Call Parser Changes Start ------\n", .{});
+    struct_parser.printChanges();
+    std.debug.print("------ Call Parser Changes End ------\n", .{});
+    // Apply all the changes and get the combined file back
+    const call_parser_output: []const u8 = try call_parser.apply(allocator);
+    std.debug.print("\n------ Call Parser Output Start ------\n{s}------ Call Parser Output End ------\n", .{call_parser_output});
 }
