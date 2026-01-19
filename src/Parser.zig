@@ -605,8 +605,8 @@ pub fn printChanges(self: *Self) void {
                 std.debug.print("    line: {d},\n", .{instance.line});
                 std.debug.print("    column: {d},\n", .{instance.column});
                 std.debug.print("    type: {s},\n", .{instance.type});
-                std.debug.print("    name: {s},\n", .{instance.instance});
-                std.debug.print("    fn_name: {s},\n", .{instance.fn_name});
+                std.debug.print("    name: \"{s}\",\n", .{instance.instance});
+                std.debug.print("    fn_name: \"{s}\",\n", .{instance.fn_name});
             },
         }
         std.debug.print("}}\n", .{});
