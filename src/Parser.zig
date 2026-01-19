@@ -29,10 +29,12 @@ pub const Line = struct {
 // The 'ChangeMoveFunction' change moves a function from within a struct body after it, for this it
 // needs to know where the function starts and ends respectively. For now we only have full lines
 // for each function. It also contains in which struct the changed function was contained in and it
-// also contains where that struct's body ends so that we can place the function after it.
+// also contains where that struct's body ends so that we can place the function after it. Only
+// definitions are allowed to be written inside a struct definition, this means that the function
+// line can be a single line
 pub const ChangeMoveFunction = struct {
-    fn_start_line: usize,
-    fn_end_line: usize,
+    fn_line: usize,
+    fn_name: []const u8,
     struct_end_line: usize,
     struct_type_name: []const u8,
 };
@@ -41,7 +43,9 @@ pub const ChangeMoveFunction = struct {
 // the form of `StructType_call(...)`. This means that it does only need to replace the `.` character
 // with a `_` character in the correct position. This is why this change struct only contains the
 // line and column information where to find that `.` character.
-pub const ChangeNamespaceCall = struct {
+// It could also be a namespaced function definition like `StructType.call(...) {...` for example
+// The same rules apply as with namespaced calls themselves, we simply replace the `.` with a `_`.
+pub const ChangeNamespaceCallOrDefinition = struct {
     line: usize,
     column: usize,
 };
@@ -70,12 +74,13 @@ pub const ChangeInstanceCall = struct {
 //     - (defer stuff is deferred)
 pub const Change = union(enum) {
     move: ChangeMoveFunction,
-    namespace: ChangeNamespaceCall,
+    namespace: ChangeNamespaceCallOrDefinition,
     instance: ChangeInstanceCall,
 
     pub fn deinit(self: *Change, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .move => |move| {
+                allocator.free(move.fn_name);
                 allocator.free(move.struct_type_name);
             },
             .namespace => {},
@@ -90,8 +95,8 @@ pub const Change = union(enum) {
         return switch (self.*) {
             .move => |move| .{
                 .move = .{
-                    .fn_start_line = move.fn_start_line,
-                    .fn_end_line = move.fn_end_line,
+                    .fn_line = move.fn_line,
+                    .fn_name = try allocator.dupe(u8, move.fn_name),
                     .struct_end_line = move.struct_end_line,
                     .struct_type_name = try allocator.dupe(u8, move.struct_type_name),
                 },
@@ -114,27 +119,18 @@ pub const Change = union(enum) {
     }
 };
 
-pub const ParseMode = enum {
-    struct_functions,
-    calls,
-};
-
 // This parser owns the lexer instance
 lexer: Lexer,
 
 // A list of all changes which need to be done to the source code
 changes: SinglyLinkedList(Change),
 
-// The mode in which we parse, e.g. which type of changes we collect
-parse_mode: ParseMode,
-
-pub fn init(allocator: std.mem.Allocator, file_content: []const u8, parse_mode: ParseMode) !Self {
+pub fn init(allocator: std.mem.Allocator, file_content: []const u8) !Self {
     var lexer: Lexer = .init(file_content);
     try lexer.tokenize(allocator);
     return .{
         .lexer = lexer,
         .changes = .{},
-        .parse_mode = parse_mode,
     };
 }
 
@@ -144,10 +140,8 @@ pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
 }
 
 pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
-    switch (self.parse_mode) {
-        .struct_functions => try self.parseStructFunctions(allocator),
-        .calls => std.debug.print("TODO\n", .{}),
-    }
+    try self.parseStructFunctions(allocator);
+    try self.parseCalls(allocator);
 }
 
 pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
@@ -157,13 +151,6 @@ pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
         definition_column: usize,
     };
     var in_struct_scope: ?StructScope = null;
-
-    const StructFunctionScope = struct {
-        function_name: []const u8,
-        definition_line: usize,
-        definition_column: usize,
-    };
-    var in_function_scope: ?StructFunctionScope = null;
 
     var struct_change_list: std.ArrayList(ChangeMoveFunction) = .empty;
     defer struct_change_list.deinit(allocator);
@@ -203,22 +190,6 @@ pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
         // We now definitely are inside a struct, now we search for a function scope within the struct
         // If we came to a r_brace then the struct scope ends
         if (token.type == .r_brace) {
-            if (in_function_scope != null) {
-                // We exit the current function scope *inside* a struct scope. This means that we have
-                // found the "full" function which needs to be moved out of the struct scope. We can add
-                // the change function here, but we need to add it to a local list first. When we exit
-                // the struct we can tell the change where it needs to go, this is why we need to store
-                // it in it's own list first.
-                std.debug.assert(in_struct_scope != null);
-                try struct_change_list.append(allocator, .{
-                    .fn_start_line = in_function_scope.?.definition_line,
-                    .fn_end_line = token.line,
-                    .struct_type_name = in_struct_scope.?.name,
-                    .struct_end_line = 0, // Unknown until now
-                });
-                in_function_scope = null;
-                continue;
-            }
             if (in_struct_scope != null) {
                 // We exit the struct scope, so we need to go through all the function changes until now
                 // and "tell" them where they should be inserted at, namely at the end of the struct scope,
@@ -235,29 +206,34 @@ pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
             // We should either be in a struct or in a function definition so this case should not happen
             std.debug.assert(false);
         }
-        if (in_function_scope == null) {
-            // Check if we now enter a function scope. We need to skip the return type and skip forward
-            // until we reach the pattern `identifier(`. When we reached that pattern then we are at the
-            // beginning of a function definition. This means that this whole line is assumed to be the
-            // function definition line. Inside a struct there are no function calls normally, so this
-            // is fine for now.
-            if (token.type != .identifier) {
-                continue;
-            }
-            std.debug.assert(i + 1 < tokens.len);
-            if (tokens[i + 1].type != .l_paren) {
-                // Not a call definition
-                continue;
-            }
-            in_function_scope = StructFunctionScope{
-                .function_name = token.lexeme,
-                .definition_line = token.line,
-                .definition_column = token.column,
-            };
+        // Check if we now are at afunction definition. We need to skip the return type and skip forward
+        // until we reach the pattern `identifier(`. When we reached that pattern then we are at the
+        // beginning of a function definition. This means that this whole line is assumed to be the
+        // function definition line. Inside a struct there are no function calls normally, so this
+        // is fine for now.
+        if (token.type != .identifier) {
+            continue;
         }
-        // We are inside a function scope, for now we simply do nothing in here
+        std.debug.assert(i + 1 < tokens.len);
+        if (tokens[i + 1].type != .l_paren) {
+            // Not a function definition
+            continue;
+        }
+        std.debug.assert(in_struct_scope != null);
+        try struct_change_list.append(allocator, .{
+            .fn_line = token.line,
+            .fn_name = token.lexeme,
+            .struct_type_name = in_struct_scope.?.name,
+            .struct_end_line = 0, // Unknown until now
+        });
     }
 }
+
+pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
+    _ = self;
+    _ = allocator;
+}
+
 /// Caller owns the returned string
 pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
     var lines: SinglyLinkedList(Line) = .{};
@@ -284,7 +260,7 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         if (changes_head) |change| {
             blk: switch (change.value) {
                 .move => |move| {
-                    if (line.value.num < move.fn_start_line) {
+                    if (line.value.num < move.fn_line) {
                         break :blk;
                     }
                     // If the 'struct_end_added' map does not contain an entry for the current struct type
@@ -299,70 +275,43 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     }
                     // Check the level of indentation of the function
                     var indent_lvl: usize = 0;
-                    const start_line = lines.getAt(getIdxOfLineNum(lines, move.fn_start_line).?).?;
+                    const start_line = lines.getAt(getIdxOfLineNum(lines, move.fn_line).?).?;
                     while (start_line.chars[indent_lvl] == ' ') {
                         indent_lvl += 1;
                     }
-                    std.debug.assert(line.value.num == move.fn_start_line);
+                    std.debug.assert(line.value.num == move.fn_line);
                     std.debug.assert(line_it != null);
                     // Okay now we need to find and replace the function name with the struct type
                     // followed by an underscore and then the function name like `MyStruct_function`.
                     // And then we need to do the same but also add the `asm("...")` line afterwards,
                     // change the `{` to a `;` and remove all whitespaces in front of the `;`. This
                     // line needs to be inserted first.
-                    const line_tokens = self.getTokensOfLine(start_line.num);
-                    var fn_name: []const u8 = undefined;
-                    for (line_tokens, 0..) |token, i| {
-                        if (token.type == .identifier and line_tokens[i + 1].type == .l_paren) {
-                            fn_name = token.lexeme;
-                        }
-                    }
-
-                    // Get the function name and get the new function name too
-                    const new_fn_name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ move.struct_type_name, fn_name });
+                    const new_fn_name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ move.struct_type_name, move.fn_name });
                     defer allocator.free(new_fn_name);
-                    const line_name_replaced: []const u8 = try std.mem.replaceOwned(u8, allocator, start_line.chars, fn_name, new_fn_name);
+                    const line_name_replaced: []const u8 = try std.mem.replaceOwned(u8, allocator, start_line.chars, move.fn_name, new_fn_name);
                     defer allocator.free(line_name_replaced);
                     const last_character: u8 = line_name_replaced[line_name_replaced.len - 1];
-                    std.debug.assert(last_character == '{' or last_character == ';');
-                    // Now add the first line definition
+                    std.debug.assert(last_character == ';');
                     var line_definition: []const u8 = try allocator.dupe(u8, line_name_replaced);
                     defer allocator.free(line_definition);
                     var line_definition_trimmed = line_definition[0 .. line_definition.len - 1];
                     // Remove all whitespacing and then create the definition name
                     line_definition_trimmed = std.mem.trimEnd(u8, line_definition_trimmed, &std.ascii.whitespace);
-                    const formatted_definition_line = try std.fmt.allocPrint(allocator, "{s} asm(\"{s}.{s}.{s}\");", .{
+                    const formatted_definition_line = try std.fmt.allocPrint(allocator, "{s} asm(\"{s}.{s}\");", .{
                         line_definition_trimmed,
-                        // TODO: Is the file hash even needed?
-                        "FILE_HASH",
                         move.struct_type_name,
-                        fn_name,
+                        move.fn_name,
                     });
                     defer allocator.free(formatted_definition_line);
+                    // Now add the definition line with the `asm` formatted at the end
                     try new_lines.append(allocator, .{
                         .num = start_line.num,
                         .chars = formatted_definition_line[indent_lvl..],
                     });
-                    // Now add the definition line with the `asm` formatted at the end
-                    if (last_character == '{') {
-                        // We have a implementation directly inside the struct, so we need to add the second line too
-                        try new_lines.append(allocator, .{
-                            .num = start_line.num,
-                            .chars = line_name_replaced[indent_lvl..],
-                        });
-                        // Skip the first line since it already has been added (twice)
-                        line_it = line_it.?.next;
-                        while (line_it != null and line_it.?.value.num <= move.fn_end_line) {
-                            // Build a new line with n characters removed from the indent level
-                            try new_lines.append(allocator, .{
-                                .num = line_it.?.value.num,
-                                .chars = line_it.?.value.chars[indent_lvl..],
-                            });
-                            const line_idx: usize = lines.getIdxOf(&line_it.?.value).?;
-                            line_it = line_it.?.next;
-                            try lines.removeAt(allocator, line_idx);
-                        }
-                    }
+                    // Remove the function definition line from the input so that it id not added twice
+                    const line_idx: usize = lines.getIdxOf(&line_it.?.value).?;
+                    line_it = line_it.?.next;
+                    try lines.removeAt(allocator, line_idx);
                     changes_head = change.next;
                     continue;
                 },
@@ -417,8 +366,8 @@ pub fn printChanges(self: *Self) void {
         std.debug.print("changes[{d}]: {s}: {{\n", .{ i, @tagName(change.value) });
         switch (change.value) {
             .move => |move| {
-                std.debug.print("    fn_start_line: {d},\n", .{move.fn_start_line});
-                std.debug.print("    fn_end_line: {d},\n", .{move.fn_end_line});
+                std.debug.print("    fn_line: {d},\n", .{move.fn_line});
+                std.debug.print("    fn_name: \"{s}\",\n", .{move.fn_name});
                 std.debug.print("    struct_end_line: {d},\n", .{move.struct_end_line});
                 std.debug.print("    struct_type_name: \"{s}\"\n", .{move.struct_type_name});
             },

@@ -51,27 +51,15 @@ pub fn main() !void {
     }
     std.debug.print("------ Buffer Start ------\n{s}\n------ Buffer End ------\n", .{file_content});
 
-    // Resolve all functions within structs
-    var struct_parser: Parser = try .init(allocator, file_content, .struct_functions);
-    defer struct_parser.deinit(allocator);
-    try struct_parser.parse(allocator);
-    std.debug.print("\n------ Struct Parser Changes Start ------\n", .{});
-    struct_parser.printChanges();
-    std.debug.print("------ Struct Parser Changes End ------\n", .{});
+    // Try to parse and apply all changes in one go
+    var parser: Parser = try .init(allocator, file_content);
+    defer parser.deinit(allocator);
+    try parser.parse(allocator);
+    std.debug.print("\n------ Parser Changes Start ------\n", .{});
+    parser.printChanges();
+    std.debug.print("------ Parser Changes End ------\n", .{});
     // Apply all the changes and get the combined file back
-    const struct_parser_output: []const u8 = try struct_parser.apply(allocator);
-    defer allocator.free(struct_parser_output);
-    std.debug.print("\n------ Struct Parser Output Start ------\n{s}------ Struct Parser Output End ------\n", .{struct_parser_output});
-
-    // Resolve all calls within functions
-    var call_parser: Parser = try .init(allocator, struct_parser_output, .calls);
-    defer call_parser.deinit(allocator);
-    try call_parser.parse(allocator);
-    std.debug.print("\n------ Call Parser Changes Start ------\n", .{});
-    call_parser.printChanges();
-    std.debug.print("------ Call Parser Changes End ------\n", .{});
-    // Apply all the changes and get the combined file back
-    const call_parser_output: []const u8 = try call_parser.apply(allocator);
-    defer allocator.free(call_parser_output);
-    std.debug.print("\n------ Call Parser Output Start ------\n{s}------ Call Parser Output End ------\n", .{call_parser_output});
+    const parser_output: []const u8 = try parser.apply(allocator);
+    defer allocator.free(parser_output);
+    std.debug.print("\n------ Parser Output Start ------\n{s}------ Parser Output End ------\n", .{parser_output});
 }

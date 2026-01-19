@@ -6,7 +6,8 @@ typedef struct MyStruct {
   char c;
 
 } MyStruct;
-void MyStruct_print(MyStruct *self) asm("FILEHASH.MyStruct.print");
+void MyStruct_print(MyStruct *self) asm("MyStruct.print");
+
 void MyStruct_print(MyStruct *self) {
   printf("(%i, %i, %i)", self->x, self->y, self->z);
 }

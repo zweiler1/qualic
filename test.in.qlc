@@ -5,14 +5,14 @@ typedef struct MyStruct {
   int32_t x, y, z;
   char c;
 
-  void print(MyStruct *self) {
-    printf("(%i, %i, %i)", self->x, self->y, self->z);
-  }
+  void print(MyStruct *self);
 } MyStruct;
 
-void someFunction() {
-  printf("Hello, World!\n");
+void MyStruct.print(MyStruct *self) {
+  printf("(%i, %i, %i)", self->x, self->y, self->z);
 }
+
+void someFunction() { printf("Hello, World!\n"); }
 
 int main(void) {
   someFunction();
