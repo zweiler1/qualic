@@ -64,6 +64,7 @@ pub const ChangeInstanceCall = struct {
     column: usize,
     type: []const u8,
     instance: []const u8,
+    fn_name: []const u8,
 };
 
 // A change is just a small modification which needs to be done to the input.
@@ -87,6 +88,7 @@ pub const Change = union(enum) {
             .instance => |instance| {
                 allocator.free(instance.type);
                 allocator.free(instance.instance);
+                allocator.free(instance.fn_name);
             },
         }
     }
@@ -113,6 +115,7 @@ pub const Change = union(enum) {
                     .column = instance.column,
                     .type = try allocator.dupe(u8, instance.type),
                     .instance = try allocator.dupe(u8, instance.instance),
+                    .fn_name = try allocator.dupe(u8, instance.fn_name),
                 },
             },
         };
@@ -131,6 +134,7 @@ structs_with_fns: std.StringHashMap(void),
 pub fn init(allocator: std.mem.Allocator, file_content: []const u8) !Self {
     var lexer: Lexer = .init(file_content);
     try lexer.tokenize(allocator);
+    try lexer.printTokens();
     return .{
         .lexer = lexer,
         .changes = .{},
@@ -146,8 +150,7 @@ pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
 
 pub fn parse(self: *Self, allocator: std.mem.Allocator) !void {
     try self.parseStructFunctions(allocator);
-    try self.parseNamespaces(allocator);
-    try self.parseInstances(allocator);
+    try self.parseCalls(allocator);
 }
 
 pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
@@ -236,14 +239,39 @@ pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
     }
 }
 
-pub fn parseNamespaces(self: *Self, allocator: std.mem.Allocator) !void {
+pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
     // The begin token of the current function we are in. Needed for the instance calls since they
     // need to resolve types. If it's null it means we are not inside a function definition right
     // now, if it has a value it's the index of the token in the lexer.tokens.items slice where the
     // function starts at.
     // var function_begin: ?usize = null;
 
+    // A small hash map containing the type of the variable as a string view into the lexer's input
+    var global_variables: std.StringHashMap([]const u8) = .init(allocator);
+    defer global_variables.deinit();
+
+    const ScopeVariable = struct {
+        // The name of the variable
+        name: []const u8,
+        // The type of the variable
+        type: []const u8,
+        // The "scope level" in which the variable was defined, for example in a sub-scope of the
+        // function. This is needed for proper tracking of scopes when variables in sub-scopes go
+        // out of scope, for example
+        scope_level: usize,
+    };
+    // A small hash map containing the type of the variable as a string view into the lexer's input
+    // It contains all the variables located inside of a function's scope
+    // Variables near the end of the list appear in deeper nested scopes while variables near the front
+    // appear in earlier scopes.
+    var scope_variables: std.ArrayList(ScopeVariable) = .empty;
+    defer scope_variables.deinit(allocator);
+
     const tokens = self.lexer.tokens.items;
+    // A scope level of 0 means that we are at the global scope. 1 means we are inside a function's
+    // scope and values above 1 mean we are in sub-scopes of a function. Other definitions, like
+    // struct, enum or union definitions are not counted as scopes by this algorithm.
+    var scope_level: usize = 0;
     for (tokens, 0..) |token, i| {
         // For now we search only for the pattern `identifier.identifier(` where the first
         // identifier is one of the structs containing function definitions. This also means
@@ -253,13 +281,47 @@ pub fn parseNamespaces(self: *Self, allocator: std.mem.Allocator) !void {
             // Skip the tokens at the end
             continue;
         }
+        if (token.type == .l_brace) {
+            // The scope level increases
+            scope_level += 1;
+            continue;
+        }
+        if (token.type == .r_brace) {
+            // The scope level decreases, remove all variables of the scope level which now ends
+            // TODO: This is the place where the defer would be placed in a similar way to how
+            // we can detect that the variable is no longer present in here
+            std.debug.assert(scope_level > 0);
+            scope_level -= 1;
+            while (scope_variables.getLastOrNull()) |last_variable| {
+                if (last_variable.scope_level > scope_level) {
+                    // The scope variables did not allocate anything so we do not need to free them either
+                    _ = scope_variables.pop();
+                } else {
+                    break;
+                }
+            }
+        }
         if (token.type != .identifier) {
             // Skip if this token is not an identifier
             continue;
         }
-        if (self.structs_with_fns.getKey(token.lexeme) == null) {
-            // This identifier is not a known struct type
-            continue;
+        if (tokens[i + 1].type == .identifier and tokens[i + 2].type == .assign) {
+            // Check if this token is a known struct type, if it is then we need to add it to the
+            // global or scoped variable list
+            if (self.structs_with_fns.getKey(token.lexeme) != null) {
+                if (scope_level > 0) {
+                    // It's a scoped variable
+                    try scope_variables.append(allocator, .{
+                        .name = tokens[i + 1].lexeme,
+                        .type = token.lexeme,
+                        .scope_level = scope_level,
+                    });
+                } else {
+                    // It's a global variable
+                    try global_variables.put(tokens[i + 1].lexeme, token.lexeme);
+                }
+                continue;
+            }
         }
         if (tokens[i + 1].type != .dot) {
             // The struct type is not followed by a dot
@@ -273,24 +335,103 @@ pub fn parseNamespaces(self: *Self, allocator: std.mem.Allocator) !void {
             // The struct type is not followed by a `.identifier(`
             continue;
         }
-        // The struct type is now definitely followed by a call, this means that we can add the
-        // instance change where the `.` will be changed to an `_`.
-        try self.changes.append(allocator, .{
-            .namespace = .{
-                .column = tokens[i + 1].column,
-                .line = tokens[i + 1].line,
-            },
-        });
+        if (self.structs_with_fns.getKey(token.lexeme) != null) {
+            // This identifier is a known struct type so this is a namespace call
+            // The struct type is now definitely followed by a call, this means that we can add the
+            // instance change where the `.` will be changed to an `_`.
+            try self.changes.append(allocator, .{
+                .namespace = .{
+                    .column = tokens[i + 1].column,
+                    .line = tokens[i + 1].line,
+                },
+            });
+            // To see if this is a function definition we need to look ahead in a balaced way until
+            // we find the closing parenthesis. If we then are followed by an left curly brace then
+            // this means that this is the begin of a function definition.
+        }
+        const global_variable = global_variables.getKey(token.lexeme);
+        if (global_variable) |global_var_type| {
+            // It's an instance call of a globally known variable of struct type x
+            try self.changes.append(allocator, .{
+                .instance = .{
+                    .line = token.line,
+                    .column = token.column,
+                    .type = global_var_type,
+                    .instance = token.lexeme,
+                    .fn_name = tokens[i + 2].lexeme,
+                },
+            });
+            break;
+        }
+        for (scope_variables.items) |scope_var| {
+            if (std.mem.eql(u8, scope_var.name, token.lexeme)) {
+                // It's an instance call of a known variable inside the function's scope
+                try self.changes.append(allocator, .{
+                    .instance = .{
+                        .line = token.line,
+                        .column = token.column,
+                        .type = scope_var.type,
+                        .instance = scope_var.name,
+                        .fn_name = tokens[i + 2].lexeme,
+                    },
+                });
+                break;
+            }
+        }
     }
-}
-
-pub fn parseInstances(self: *Self, allocator: std.mem.Allocator) !void {
-    _ = self;
-    _ = allocator;
 }
 
 /// Caller owns the returned string
 pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
+    // Sort all the changes
+    var changes_head = self.changes.head;
+    const changes_len = self.changes.len();
+    for (0..changes_len) |i| {
+        changes_head = self.changes.head;
+        while (changes_head) |change| {
+            if (change.*.next) |next| {
+                const change_line = switch (change.value) {
+                    .move => |move| move.fn_line,
+                    .namespace => |namespace| namespace.line,
+                    .instance => |instance| instance.line,
+                };
+                const next_line = switch (next.value) {
+                    .move => |move| move.fn_line,
+                    .namespace => |namespace| namespace.line,
+                    .instance => |instance| instance.line,
+                };
+                var needs_swapping: bool = false;
+                if (next_line < change_line) {
+                    // We need to swap them
+                    needs_swapping = true;
+                } else if (next_line == change_line) {
+                    // Sort which column comes first. We *always* resolve *all* namespaces within the
+                    // same line before we resolve the instance calls becaues the namespaces are
+                    // positional and the instance calls are purely patternal. This means that within
+                    // the same line first need to come all namespaces (sorted would be good) and then
+                    // all instances (also sorted would be good). They do not *need* to be sorted in
+                    // their own, but it's just better that way. This means that we *always* try to
+                    // put namespaces in front of instances.
+                    needs_swapping = change.value == .instance and next.value == .namespace;
+                }
+                if (needs_swapping) {
+                    const next_next = next.next;
+                    change.next = next_next;
+                    next.next = change;
+                    if (i == 0) {
+                        self.changes.head = next;
+                    } else {
+                        const last = self.changes.getNodeAt(i - 1).?;
+                        last.next = next;
+                    }
+                }
+            }
+            changes_head = change.next;
+        }
+    }
+    changes_head = self.changes.head;
+
+    // Get all the lines from the lexer's input line by line
     var lines: SinglyLinkedList(Line) = .{};
     defer lines.clearAndFree(allocator);
     var it = std.mem.splitScalar(u8, self.lexer.input, '\n');
@@ -305,12 +446,12 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         });
     }
 
+    // Apply all changes
     var new_lines: SinglyLinkedList(Line) = .{};
     defer new_lines.clearAndFree(allocator);
     var line_it = lines.head;
     // We take the first move change we can find and move all lines from the input to the
     // output until we reach the first move line
-    var changes_head = self.changes.head;
     var struct_end_added: std.StringHashMap(void) = .init(allocator);
     defer struct_end_added.deinit();
     while (line_it) |line| {
@@ -381,8 +522,48 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     changes_head = change.next;
                     continue;
                 },
-                .instance => {
-                    std.debug.print("changes_head is 'instance'\n", .{});
+                .instance => |instance| {
+                    if (line.value.num != instance.line) {
+                        break :blk;
+                    }
+                    // Modify the input line directly without adding it to the output. This way other
+                    // changes to this line can still take effect.
+                    const instance_fmt_empty = try std.fmt.allocPrint(allocator, "{s}.{s}()", .{
+                        instance.instance,
+                        instance.fn_name,
+                    });
+                    defer allocator.free(instance_fmt_empty);
+                    const replace_fmt_empty = try std.fmt.allocPrint(allocator, "{s}_{s}(&{s})", .{
+                        instance.type,
+                        instance.fn_name,
+                        instance.instance,
+                    });
+                    defer allocator.free(replace_fmt_empty);
+                    const new_line_empty = try std.mem.replaceOwned(
+                        u8,
+                        allocator,
+                        line.value.chars,
+                        instance_fmt_empty,
+                        replace_fmt_empty,
+                    );
+                    defer allocator.free(new_line_empty);
+
+                    const instance_fmt = try std.fmt.allocPrint(allocator, "{s}.{s}(", .{
+                        instance.instance,
+                        instance.fn_name,
+                    });
+                    defer allocator.free(instance_fmt);
+                    const replace_fmt = try std.fmt.allocPrint(allocator, "{s}_{s}(&{s}, ", .{
+                        instance.type,
+                        instance.fn_name,
+                        instance.instance,
+                    });
+                    defer allocator.free(replace_fmt);
+                    const new_line = try std.mem.replaceOwned(u8, allocator, new_line_empty, instance_fmt, replace_fmt);
+                    allocator.free(line.value.chars);
+                    line.value.chars = new_line;
+                    changes_head = change.next;
+                    continue;
                 },
             }
         }
@@ -420,7 +601,13 @@ pub fn printChanges(self: *Self) void {
                 std.debug.print("    line: {d},\n", .{namespace.line});
                 std.debug.print("    column: {d},\n", .{namespace.column});
             },
-            .instance => {},
+            .instance => |instance| {
+                std.debug.print("    line: {d},\n", .{instance.line});
+                std.debug.print("    column: {d},\n", .{instance.column});
+                std.debug.print("    type: {s},\n", .{instance.type});
+                std.debug.print("    name: {s},\n", .{instance.instance});
+                std.debug.print("    fn_name: {s},\n", .{instance.fn_name});
+            },
         }
         std.debug.print("}}\n", .{});
         i += 1;
