@@ -66,16 +66,31 @@ pub const ChangeInstanceCall = struct {
     fn_name: []const u8,
 };
 
+// The 'ChangeDeferStatement' change is a bit more complex. It can only happen within a function,
+// the defer keyword is not allowed outside of a function scope. We need to remember all defer
+// statements in their correct ordering, remember in which scope level they were defined in, and
+// when the scope ends then we need to apply all the defer statements in backwards ordering. This
+// is not as hard to do as i initially thought simply because of the ground-work of the instance
+// analysis pass. This is the reason why collecting all defer statements is done in the same pass
+// as the `ChangeInstanceCall` is.
+pub const ChangeDeferStatement = struct {
+    line: usize,
+    indentation: usize,
+    content_line: usize,
+};
+
 // A change is just a small modification which needs to be done to the input.
 // A change can be one of these operations:
 //     - Moving out a function of a struct body and changing it's name accordingly
 //     - Changing a namespaced call like `StructType.call(...)` to `StructType_call(...)`
 //     - Changing an instance call like `s.call(...)` to `StructType_call(&s, ...)`
-//     - (defer stuff is deferred)
+//     - Defer for statements, like `defer <statement>;`
+//     - Defer for blocks (not implemented yet)
 pub const Change = union(enum) {
     move: ChangeMoveFunction,
     namespace: ChangeNamespaceCallOrDefinition,
     instance: ChangeInstanceCall,
+    defer_s: ChangeDeferStatement,
 
     pub fn deinit(self: *Change, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -89,6 +104,7 @@ pub const Change = union(enum) {
                 allocator.free(instance.instance);
                 allocator.free(instance.fn_name);
             },
+            .defer_s => {},
         }
     }
 
@@ -114,6 +130,13 @@ pub const Change = union(enum) {
                     .type = try allocator.dupe(u8, instance.type),
                     .instance = try allocator.dupe(u8, instance.instance),
                     .fn_name = try allocator.dupe(u8, instance.fn_name),
+                },
+            },
+            .defer_s => |defer_s| .{
+                .defer_s = .{
+                    .line = defer_s.line,
+                    .indentation = defer_s.indentation,
+                    .content_line = defer_s.content_line,
                 },
             },
         };
@@ -265,18 +288,74 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
     var scope_variables: std.ArrayList(ScopeVariable) = .empty;
     defer scope_variables.deinit(allocator);
 
+    const DeferStatement = struct {
+        // The content of the defer statement, e.g. what is to the right of it until the end of the
+        // statement, for now it's just the rest of the line.
+        line: usize,
+        // The scope level at which the defer statement appears. When the scope of this defer
+        // statement ends then the statement will be emitted as a new line there. The defer statements
+        // will be inserted for every 'return' statement as well. This means that every single 'return'
+        // statement in a scope containg at least one 'defer' statement will be re re-written as well.
+        // But re-writing the 'return' statement will be a task of future me. For now, the defer
+        // statemnets will just be inserted right before the return statement if we come across one.
+        // TODO: Implement the re-writing of return statements
+        scope_level: usize,
+    };
+    var defer_statements: std.ArrayList(DeferStatement) = .empty;
+    defer defer_statements.deinit(allocator);
+
     const tokens = self.lexer.tokens.items;
     // A scope level of 0 means that we are at the global scope. 1 means we are inside a function's
     // scope and values above 1 mean we are in sub-scopes of a function. Other definitions, like
     // struct, enum or union definitions are not counted as scopes by this algorithm.
     var scope_level: usize = 0;
+    var scope_level_of_last_return_statement: usize = 0;
+    var skip_until_end_of_line: ?usize = null;
     for (tokens, 0..) |token, i| {
+        if (skip_until_end_of_line) |line_num| {
+            if (token.line == line_num) {
+                continue;
+            }
+            skip_until_end_of_line = null;
+        }
         // For now we search only for the pattern `identifier.identifier(` where the first
         // identifier is one of the structs containing function definitions. This also means
         // that qualic does not resolve things like `MyStruct.call(` when `MyStruct` does not
         // contain any function definitions at all.
         if (i + 3 > tokens.len) {
             // Skip the tokens at the end
+            continue;
+        }
+        if (token.type == .@"defer") {
+            std.debug.print("Adding defer statement: {d}[{d}]\n", .{ token.line, scope_level });
+            // We came across the defer keyword. For now we only support statements
+            std.debug.assert(tokens[i + 1].type != .l_brace);
+            try defer_statements.append(allocator, .{
+                .line = token.line,
+                .scope_level = scope_level,
+            });
+            skip_until_end_of_line = token.line;
+            continue;
+        }
+        if (token.type == .@"return") {
+            std.debug.print("Return statement in scope: {d}\n", .{scope_level});
+            // We apply all known defer statements at the line above this one, which means the 'line'
+            // in the defer change will be the line of this return statement. The indentation of the
+            // defer statement is based on the indentation of this return statement.
+            // TODO: Implement storing the rhs of the return statement here
+            var idx: usize = defer_statements.items.len;
+            while (idx > 0) : (idx -= 1) {
+                try self.changes.append(allocator, .{
+                    .defer_s = .{
+                        .line = token.line,
+                        // The return statement probably has nothing to the left of it so it's column
+                        // will be our indentation level
+                        .indentation = token.column,
+                        .content_line = defer_statements.items[idx - 1].line,
+                    },
+                });
+            }
+            scope_level_of_last_return_statement = scope_level;
             continue;
         }
         if (token.type == .l_brace) {
@@ -286,18 +365,54 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
         }
         if (token.type == .r_brace) {
             // The scope level decreases, remove all variables of the scope level which now ends
-            // TODO: This is the place where the defer would be placed in a similar way to how
-            // we can detect that the variable is no longer present in here
+            std.debug.print("End of scope: {d}\n", .{scope_level});
             std.debug.assert(scope_level > 0);
-            scope_level -= 1;
+            // Remove all variables which now went out of scope
             while (scope_variables.getLastOrNull()) |last_variable| {
-                if (last_variable.scope_level > scope_level) {
+                if (last_variable.scope_level > scope_level - 1) {
                     // The scope variables did not allocate anything so we do not need to free them either
                     _ = scope_variables.pop();
                 } else {
                     break;
                 }
             }
+            if (scope_level_of_last_return_statement != scope_level) {
+                std.debug.print("scope level of last return != scope_level ({d}:{d})\n", .{
+                    scope_level_of_last_return_statement,
+                    scope_level,
+                });
+                // Only insert the defer statements which would go out of scope now. These should
+                // be the last ones in the list anyways. If we had a return statement then all
+                // accumulated defers would have been added instead. This also removes all defer
+                // statements of this scope
+                while (defer_statements.getLastOrNull()) |defer_statement| {
+                    std.debug.print("scope_level: {d}, defer_statement.scope_level: {d}\n", .{ scope_level, defer_statement.scope_level });
+                    if (defer_statement.scope_level != scope_level) {
+                        break;
+                    }
+                    try self.changes.append(allocator, .{
+                        .defer_s = .{
+                            .line = token.line,
+                            .indentation = 0,
+                            .content_line = defer_statement.line,
+                        },
+                    });
+                    _ = defer_statements.pop();
+                }
+                scope_level_of_last_return_statement = 0;
+                continue;
+            }
+            // Remove all defer statements which now went out of scope
+            while (defer_statements.getLastOrNull()) |defer_statement| {
+                if (defer_statement.scope_level > scope_level - 1) {
+                    // The defer statement went out of scope now
+                    _ = defer_statements.pop();
+                } else {
+                    break;
+                }
+            }
+            scope_level -= 1;
+            scope_level_of_last_return_statement = 0;
         }
         if (token.type != .identifier) {
             // Skip if this token is not an identifier
@@ -390,11 +505,13 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     .move => |move| move.fn_line,
                     .namespace => |namespace| namespace.line,
                     .instance => |instance| instance.line,
+                    .defer_s => |defer_s| defer_s.line,
                 };
                 const next_line = switch (next.value) {
                     .move => |move| move.fn_line,
                     .namespace => |namespace| namespace.line,
                     .instance => |instance| instance.line,
+                    .defer_s => |defer_s| defer_s.line,
                 };
                 var needs_swapping: bool = false;
                 if (next_line < change_line) {
@@ -561,6 +678,9 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     changes_head = change.next;
                     continue;
                 },
+                .defer_s => {
+                    std.debug.print("Applying defer_s...\n", .{});
+                },
             }
         }
         try new_lines.append(allocator, line.value);
@@ -602,6 +722,11 @@ pub fn printChanges(self: *Self) void {
                 std.debug.print("    type: {s},\n", .{instance.type});
                 std.debug.print("    name: \"{s}\",\n", .{instance.instance});
                 std.debug.print("    fn_name: \"{s}\",\n", .{instance.fn_name});
+            },
+            .defer_s => |defer_s| {
+                std.debug.print("    line: {d},\n", .{defer_s.line});
+                std.debug.print("    indentation: {d},\n", .{defer_s.indentation});
+                std.debug.print("    content_line: {d},\n", .{defer_s.content_line});
             },
         }
         std.debug.print("}}\n", .{});

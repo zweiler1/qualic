@@ -52,6 +52,9 @@ pub const TokenType = enum {
     deq, // /=
     xeq, // ^=
 
+    // custom keywords
+    @"defer",
+
     // builtin types
     void,
     char,
