@@ -329,7 +329,6 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             continue;
         }
         if (token.type == .@"defer") {
-            std.debug.print("Adding defer statement: {d}[{d}]\n", .{ token.line, scope_level });
             // We came across the defer keyword. For now we only support statements
             std.debug.assert(tokens[i + 1].type != .l_brace);
             try defer_statements.append(allocator, .{
@@ -341,7 +340,6 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             continue;
         }
         if (token.type == .@"return") {
-            std.debug.print("Return statement in scope: {d}\n", .{scope_level});
             // We apply all known defer statements at the line above this one, which means the 'line'
             // in the defer change will be the line of this return statement. The indentation of the
             // defer statement is based on the indentation of this return statement.
@@ -368,7 +366,6 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
         }
         if (token.type == .r_brace) {
             // The scope level decreases, remove all variables of the scope level which now ends
-            std.debug.print("End of scope: {d}\n", .{scope_level});
             std.debug.assert(scope_level > 0);
             // Remove all variables which now went out of scope
             while (scope_variables.getLastOrNull()) |last_variable| {
@@ -380,16 +377,11 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                 }
             }
             if (scope_level_of_last_return_statement != scope_level) {
-                std.debug.print("scope level of last return != scope_level ({d}:{d})\n", .{
-                    scope_level_of_last_return_statement,
-                    scope_level,
-                });
                 // Only insert the defer statements which would go out of scope now. These should
                 // be the last ones in the list anyways. If we had a return statement then all
                 // accumulated defers would have been added instead. This also removes all defer
                 // statements of this scope
                 while (defer_statements.getLastOrNull()) |defer_statement| {
-                    std.debug.print("scope_level: {d}, defer_statement.scope_level: {d}\n", .{ scope_level, defer_statement.scope_level });
                     if (defer_statement.scope_level != scope_level) {
                         break;
                     }
@@ -725,7 +717,6 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                         .c = content,
                     });
                     defer allocator.free(content_line);
-                    std.debug.print("Adding line: {s}\n", .{content_line});
                     try new_lines.append(allocator, .{
                         .num = line.value.num,
                         .chars = content_line,
