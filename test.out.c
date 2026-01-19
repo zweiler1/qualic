@@ -2,16 +2,22 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct MyStruct {
   int32_t x, y, z;
-  char c;
+  char *string;
 
 } MyStruct;
 void MyStruct_print(MyStruct *self) asm("MyStruct.print");
+void MyStruct_deinit(MyStruct *self) asm("MyStruct.deinit");
 
 void MyStruct_print(MyStruct *self) {
-  printf("(%i, %i, %i)\n", self->x, self->y, self->z);
+  printf("(%i, %i, %i), %s\n", self->x, self->y, self->z, self->string);
+}
+
+void MyStruct_deinit(MyStruct *self) {
+  free(self->string);
 }
 
 void someFunction() { printf("Hello, World!\n"); }
@@ -35,11 +41,18 @@ int main(void) {
   }
 
   someFunction();
-  MyStruct s = (MyStruct){.x = 0b10, .y = 0xFF, .z = 0o30, .c = '\n'};
+  MyStruct s = (MyStruct){
+      .x = 0b10,
+      .y = 0xFF,
+      .z = 0o30,
+      .string = (char *)malloc(23),
+  };
+  memcpy(s.string, "Hello there it's steve", 23);
   MyStruct_print(&s);
   MyStruct_print(&s);
 
   // Defer stuff should be inserted here
+  MyStruct_deinit(&s);
   printf("should run first\n");
   printf("should run second\n");
   free(sp);

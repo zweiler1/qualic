@@ -312,14 +312,7 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
     // struct, enum or union definitions are not counted as scopes by this algorithm.
     var scope_level: usize = 0;
     var scope_level_of_last_return_statement: usize = 0;
-    var skip_until_end_of_line: ?usize = null;
     for (tokens, 0..) |token, i| {
-        if (skip_until_end_of_line) |line_num| {
-            if (token.line == line_num) {
-                continue;
-            }
-            skip_until_end_of_line = null;
-        }
         // For now we search only for the pattern `identifier.identifier(` where the first
         // identifier is one of the structs containing function definitions. This also means
         // that qualic does not resolve things like `MyStruct.call(` when `MyStruct` does not
@@ -336,7 +329,6 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                 .scope_level = scope_level,
                 .indent_lvl = token.column,
             });
-            skip_until_end_of_line = token.line;
             continue;
         }
         if (token.type == .@"return") {
@@ -520,7 +512,8 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     // all instances (also sorted would be good). They do not *need* to be sorted in
                     // their own, but it's just better that way. This means that we *always* try to
                     // put namespaces in front of instances.
-                    needs_swapping = change.value == .instance and next.value == .namespace;
+                    needs_swapping = change.value == .instance and next.value == .namespace or //
+                        (change.value == .namespace or change.value == .instance) and next.value == .defer_s;
                 }
                 if (needs_swapping) {
                     const next_next = next.next;
@@ -554,9 +547,12 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         });
     }
 
-    // Collect & remove all defer lines. We do this by mapping the original line number to the
-    // defer content string directly. This means that we remove all the lines in which the defer
-    // statements were written directly from the input
+    // Collect which lines are sources of the defer statements. We mark these lines as "dirty" and
+    // once we reach those lines in the loop below we do not output them but actually put them into
+    // this map. For now this map only contains undefined strings, and it needs to be filled during
+    // the loop execution. We can do this because by the time we actually need the information
+    // (when we generate the statements from the defers) the actual definition of the defer was
+    // many lines higher up.
     var defer_contents: std.AutoHashMap(usize, []const u8) = .init(allocator);
     defer defer_contents.deinit();
     defer {
@@ -573,15 +569,7 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
             .instance => {},
             .defer_s => |defer_s| {
                 if (defer_contents.get(defer_s.content_line) == null) {
-                    // This content line has not been removed from the input yet
-                    const line_idx: usize = getIdxOfLineNum(lines, defer_s.content_line).?;
-                    const content_line = lines.getAt(line_idx).?;
-                    const line_tokens = self.getTokensOfLine(defer_s.content_line);
-                    std.debug.assert(line_tokens[0].type == .@"defer");
-                    const content_start = line_tokens[1].column;
-                    const line_content = content_line.chars[content_start..];
-                    try defer_contents.put(defer_s.content_line, try allocator.dupe(u8, line_content));
-                    try lines.removeAt(allocator, line_idx);
+                    try defer_contents.put(defer_s.content_line, undefined);
                 }
             },
         }
@@ -725,6 +713,19 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     continue;
                 },
             }
+        }
+        if (defer_contents.get(line.value.num) != null) {
+            // This content line has not been removed from the input yet and it's marked as "dirty"
+            const line_idx: usize = getIdxOfLineNum(lines, line.value.num).?;
+            const content_line = lines.getAt(line_idx).?;
+            const line_tokens = self.getTokensOfLine(line.value.num);
+            std.debug.assert(line_tokens[0].type == .@"defer");
+            const content_start = line_tokens[1].column;
+            const line_content = content_line.chars[content_start..];
+            try defer_contents.put(line.value.num, try allocator.dupe(u8, line_content));
+            try lines.removeAt(allocator, line_idx);
+            line_it = line.next;
+            continue;
         }
         try new_lines.append(allocator, line.value);
         line_it = line.next;
