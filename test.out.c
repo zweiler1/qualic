@@ -21,7 +21,6 @@ int main(void) {
 
   if (false) {
     // Defer stuff should be inserted here
-    printf("should run first\n");
     printf("should run second\n");
     free(sp);
     return 0;
@@ -46,3 +45,4 @@ int main(void) {
   free(sp);
   return 0;
 }
+

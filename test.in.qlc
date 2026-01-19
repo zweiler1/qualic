@@ -20,12 +20,12 @@ int main(void) {
   MyStruct *sp = (MyStruct *)malloc(sizeof(MyStruct));
   defer free(sp);
   defer printf("should run second\n");
-  defer printf("should run first\n");
 
   if (false) {
     // Defer stuff should be inserted here
     return 0;
   }
+  defer printf("should run first\n");
 
   if (true) {
     defer printf("This prints second!\n");
