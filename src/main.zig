@@ -16,7 +16,9 @@ const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
 // Or should it rather only generate `.o` files which need to be linked together? hmmm idk
 
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+    defer std.debug.assert(debug_allocator.deinit() == .ok);
+    const allocator = debug_allocator.allocator();
 
     const input = "test.in.qlc";
     const middle = "test.middle.qlc";
@@ -41,6 +43,7 @@ pub fn main() !void {
     defer file.close();
     const stat = try file.stat();
     const file_content = try allocator.alloc(u8, stat.size);
+    defer allocator.free(file_content);
     try file.seekTo(0);
     const bytes_read = try file.readAll(file_content);
     if (bytes_read != stat.size) {
@@ -57,6 +60,7 @@ pub fn main() !void {
     std.debug.print("------ Struct Parser Changes End ------\n", .{});
     // Apply all the changes and get the combined file back
     const struct_parser_output: []const u8 = try struct_parser.apply(allocator);
+    defer allocator.free(struct_parser_output);
     std.debug.print("\n------ Struct Parser Output Start ------\n{s}------ Struct Parser Output End ------\n", .{struct_parser_output});
 
     // Resolve all calls within functions
@@ -64,9 +68,10 @@ pub fn main() !void {
     defer call_parser.deinit(allocator);
     try call_parser.parse(allocator);
     std.debug.print("\n------ Call Parser Changes Start ------\n", .{});
-    struct_parser.printChanges();
+    call_parser.printChanges();
     std.debug.print("------ Call Parser Changes End ------\n", .{});
     // Apply all the changes and get the combined file back
     const call_parser_output: []const u8 = try call_parser.apply(allocator);
+    defer allocator.free(call_parser_output);
     std.debug.print("\n------ Call Parser Output Start ------\n{s}------ Call Parser Output End ------\n", .{call_parser_output});
 }

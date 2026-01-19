@@ -258,7 +258,7 @@ pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
         // We are inside a function scope, for now we simply do nothing in here
     }
 }
-
+/// Caller owns the returned string
 pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
     var lines: SinglyLinkedList(Line) = .{};
     defer lines.clearAndFree(allocator);
@@ -338,6 +338,7 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                         move.struct_type_name,
                         fn_name,
                     });
+                    defer allocator.free(formatted_definition_line);
                     try new_lines.append(allocator, .{
                         .num = start_line.num,
                         .chars = formatted_definition_line[indent_lvl..],
@@ -398,6 +399,7 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
     // return file;
 
     var writer_allocating: std.Io.Writer.Allocating = .init(allocator);
+    defer writer_allocating.deinit();
     const writer = &writer_allocating.writer;
     while (line_it) |line| {
         try writer.writeAll(line.value.chars);
@@ -405,7 +407,7 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         line_it = line.next;
     }
     try writer.flush();
-    return writer.buffered();
+    return allocator.dupe(u8, writer.buffered());
 }
 
 pub fn printChanges(self: *Self) void {
