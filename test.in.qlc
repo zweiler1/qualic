@@ -11,7 +11,7 @@ typedef struct MyStruct {
 } MyStruct;
 
 void MyStruct.print(MyStruct *self) {
-  printf("(%i, %i, %i)", self->x, self->y, self->z);
+  printf("(%i, %i, %i)\n", self->x, self->y, self->z);
 }
 
 void someFunction() { printf("Hello, World!\n"); }
@@ -20,7 +20,7 @@ int main(void) {
   MyStruct *sp = (MyStruct *)malloc(sizeof(MyStruct));
   defer free(sp);
 
-  if (true) {
+  if (false) {
     // Defer stuff should be inserted here
     return 0;
   }
@@ -37,7 +37,6 @@ int main(void) {
   MyStruct s = (MyStruct){.x = 0b10, .y = 0xFF, .z = 0o30, .c = '\n'};
   s.print();
   MyStruct.print(&s);
-  printf("\n");
 
   // Defer stuff should be inserted here
   return 0;
