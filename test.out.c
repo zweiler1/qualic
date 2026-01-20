@@ -29,10 +29,12 @@ int main(void) {
 
   if (false) {
     // Defer stuff should be inserted here
-    int tempvar_wdK5Yxb6 = 0;
-    printf("should run second\n");
-    free(sp);
-    return tempvar_wdK5Yxb6;
+    int return_Ze15rOas = 0;
+    {
+      printf("should run second\n");
+      free(sp);
+    }
+    return return_Ze15rOas;
   }
 
   if (true) {
@@ -58,7 +60,10 @@ int main(void) {
   int tempvar_dLGVVt5v = 0;
   MyStruct_deinit(&s);
   printf("should run first\n");
-  printf("should run second\n");
-  free(sp);
-  return tempvar_dLGVVt5v;
+  {
+    printf("should run second\n");
+    free(sp);
+  }
+  return return_v9CCUckE;
 }
+

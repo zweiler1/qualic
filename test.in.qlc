@@ -26,8 +26,10 @@ int main(void) {
     return 0;
   }
   MyStruct *sp = (MyStruct *)malloc(sizeof(MyStruct));
-  defer free(sp);
-  defer printf("should run second\n");
+  defer {
+    printf("should run second\n");
+    free(sp);
+  }
 
   if (false) {
     // Defer stuff should be inserted here

@@ -76,14 +76,18 @@ pub const ChangeInstanceCall = struct {
 pub const ChangeDeferStatement = struct {
     line: usize,
     indentation: usize,
-    content_line: usize,
+    // If content_line_begin == content_line_ned then it's a defer statement like `defer <expr>;`
+    // If they differ then it's a defer block like `defer { ... }`
+    content_line_begin: usize,
+    content_line_end: usize,
 };
 
 // The 'ChangeDeferReturnRemove' change is pretty simple. When we come across the `return`
-// statement line we do not emit `return <expr>;` but we emit `auto <tempvar> = <expr>;` that later
-// on, in the 'ChangeDeferReturnInsert' change we can insert the line `return <tempvar>;` This is
-// important because this way the return value is evaluated before any defer statements are inserted,
-// potentially freeing the value(s) needed for the return expression.
+// statement line we do not emit `return <expr>;` but we emit `<type> <return_HASH> = <expr>;`
+// that later on, in the 'ChangeDeferReturnInsert' change we can insert the line
+// `return <return_HASH>;` This is important because this way the return value is evaluated
+// before any defer statements are inserted, potentially freeing the value(s) needed for the return
+// expression.
 pub const ChangeDeferReturnRemove = struct {
     line: usize,
     fn_type_line: usize,
@@ -92,8 +96,8 @@ pub const ChangeDeferReturnRemove = struct {
     var_name: []const u8,
 };
 
-// The 'ChangeDeferReturnInsert' change simply emits the line `return <tempvar>;` with the given
-// indentation. The name of the temp variable is the result of a deterministic hashing function
+// The 'ChangeDeferReturnInsert' change simply emits the line `return <return_HASH>;` with the
+// given indentation. The name of the temp variable is the result of a deterministic hashing function
 pub const ChangeDeferReturnInsert = struct {
     line: usize,
     indentation: usize,
@@ -165,7 +169,8 @@ pub const Change = union(enum) {
                 .defer_s = .{
                     .line = defer_s.line,
                     .indentation = defer_s.indentation,
-                    .content_line = defer_s.content_line,
+                    .content_line_begin = defer_s.content_line_begin,
+                    .content_line_end = defer_s.content_line_end,
                 },
             },
             .defer_return_remove => |remove| .{
@@ -335,7 +340,8 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
     const DeferStatement = struct {
         // The content of the defer statement, e.g. what is to the right of it until the end of the
         // statement, for now it's just the rest of the line.
-        line: usize,
+        line_begin: usize,
+        line_end: usize,
         // The scope level at which the defer statement appears. When the scope of this defer
         // statement ends then the statement will be emitted as a new line there. The defer statements
         // will be inserted for every 'return' statement as well. This means that every single 'return'
@@ -357,7 +363,12 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
     var scope_level_of_last_return_statement: usize = 0;
     var fn_type_line: usize = 0;
     var fn_type_end: usize = 0;
+    var tokens_to_skip: usize = 0;
     for (tokens, 0..) |token, i| {
+        if (tokens_to_skip > 0) {
+            tokens_to_skip -= 1;
+            continue;
+        }
         // For now we search only for the pattern `identifier.identifier(` where the first
         // identifier is one of the structs containing function definitions. This also means
         // that qualic does not resolve things like `MyStruct.call(` when `MyStruct` does not
@@ -368,12 +379,35 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
         }
         if (token.type == .@"defer") {
             // We came across the defer keyword. For now we only support statements
-            std.debug.assert(tokens[i + 1].type != .l_brace);
-            try defer_statements.append(allocator, .{
-                .line = token.line,
-                .scope_level = scope_level,
-                .indent_lvl = token.column,
-            });
+            if (tokens[i + 1].type != .l_brace) {
+                // It's a single-statement defer line like `defer <statement>;`
+                try defer_statements.append(allocator, .{
+                    .line_begin = token.line,
+                    .line_end = token.line,
+                    .scope_level = scope_level,
+                    .indent_lvl = token.column,
+                });
+            } else {
+                // It's a multi-line statement defer line like `defer { ... }`
+                const line_begin = token.line;
+                const indent_lvl = token.column;
+                // Skip all tokens balanced until the end `}`
+                var depth: usize = 1;
+                // How many tokens are skipped
+                var offset: usize = 2;
+                while (tokens[i + offset].type != .r_brace or depth > 1) : (offset += 1) {
+                    if (tokens[i + offset].type == .l_brace) {
+                        depth += 1;
+                    }
+                }
+                tokens_to_skip = offset;
+                try defer_statements.append(allocator, .{
+                    .line_begin = line_begin,
+                    .line_end = tokens[i + offset].line,
+                    .scope_level = scope_level,
+                    .indent_lvl = indent_lvl,
+                });
+            }
             continue;
         }
         if (token.type == .@"return") {
@@ -382,21 +416,21 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             // defer statement is based on the indentation of this return statement.
             var idx: usize = defer_statements.items.len;
             const split_return: bool = idx > 0;
-            var tempvar_name_hashed: []const u8 = undefined;
+            var return_name_hashed: []const u8 = undefined;
             if (split_return) {
                 // There are pending defer statements, which means the return statement needs to be
                 // split into two parts here.
-                const tempvar_name: []const u8 = try std.fmt.allocPrint(allocator, "tempvar_{d}", .{scope_level});
-                defer allocator.free(tempvar_name);
+                const return_name: []const u8 = try std.fmt.allocPrint(allocator, "return_{d}", .{scope_level});
+                defer allocator.free(return_name);
                 var hash: [8]u8 = undefined;
-                createHash(tempvar_name, &hash);
-                tempvar_name_hashed = try std.fmt.allocPrint(allocator, "tempvar_{s}", .{hash});
+                createHash(return_name, &hash);
+                return_name_hashed = try std.fmt.allocPrint(allocator, "return_{s}", .{hash});
                 try self.changes.append(allocator, .{
                     .defer_return_remove = .{
                         .line = token.line,
                         .fn_type_line = fn_type_line,
                         .fn_type_end = fn_type_end,
-                        .var_name = tempvar_name_hashed,
+                        .var_name = return_name_hashed,
                     },
                 });
             }
@@ -407,7 +441,8 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                         // The return statement probably has nothing to the left of it so it's column
                         // will be our indentation level
                         .indentation = token.column,
-                        .content_line = defer_statements.items[idx - 1].line,
+                        .content_line_begin = defer_statements.items[idx - 1].line_begin,
+                        .content_line_end = defer_statements.items[idx - 1].line_end,
                     },
                 });
             }
@@ -416,10 +451,10 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                     .defer_return_insert = .{
                         .line = token.line,
                         .indentation = token.column,
-                        .var_name = tempvar_name_hashed,
+                        .var_name = return_name_hashed,
                     },
                 });
-                allocator.free(tempvar_name_hashed);
+                allocator.free(return_name_hashed);
             }
             scope_level_of_last_return_statement = scope_level;
             continue;
@@ -454,7 +489,8 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                         .defer_s = .{
                             .line = token.line,
                             .indentation = defer_statement.indent_lvl,
-                            .content_line = defer_statement.line,
+                            .content_line_begin = defer_statement.line_begin,
+                            .content_line_end = defer_statement.line_end,
                         },
                     });
                     _ = defer_statements.pop();
@@ -598,7 +634,8 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     // put namespaces in front of instances.
                     const swap_instance_and_namespace = change.value == .instance and next.value == .namespace;
                     const swap_defer = (change.value == .namespace or change.value == .instance) and next.value == .defer_s;
-                    needs_swapping = swap_instance_and_namespace or swap_defer;
+                    const swap_return = (change.value == .namespace or change.value == .instance) and next.value == .defer_return_remove;
+                    needs_swapping = swap_instance_and_namespace or swap_defer or swap_return;
                 }
                 if (needs_swapping) {
                     const next_next = next.next;
@@ -650,8 +687,28 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
     while (changes_iter.next()) |change| {
         switch (change.*) {
             .defer_s => |defer_s| {
-                if (defer_contents.get(defer_s.content_line) == null) {
-                    try defer_contents.put(defer_s.content_line, undefined);
+                if (defer_s.content_line_begin == defer_s.content_line_end) {
+                    // Single statement
+                    if (defer_contents.get(defer_s.content_line_begin) == null) {
+                        try defer_contents.put(defer_s.content_line_begin, undefined);
+                    }
+                } else {
+                    // Block
+                    std.debug.print("defer_s.(begin, end) = ({d}, {d})\n", .{
+                        defer_s.content_line_begin,
+                        defer_s.content_line_end,
+                    });
+                    if (getIdxOfLineNum(lines, defer_s.content_line_end)) |end_line_idx| {
+                        try lines.removeAt(allocator, end_line_idx);
+                    }
+                    if (getIdxOfLineNum(lines, defer_s.content_line_begin)) |begin_line_idx| {
+                        try lines.removeAt(allocator, begin_line_idx);
+                    }
+                    for (defer_s.content_line_begin + 1..defer_s.content_line_end) |line_num| {
+                        if (defer_contents.get(line_num) == null) {
+                            try defer_contents.put(line_num, undefined);
+                        }
+                    }
                 }
             },
             else => {},
@@ -781,17 +838,53 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     if (line.value.num < defer_s.line) {
                         break :blk;
                     }
-                    const content = defer_contents.get(defer_s.content_line).?;
-                    const content_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{[c]s}", .{
-                        .s = "",
-                        .n = defer_s.indentation,
-                        .c = content,
-                    });
-                    defer allocator.free(content_line);
-                    try new_lines.append(allocator, .{
-                        .num = line.value.num,
-                        .chars = content_line,
-                    });
+                    if (defer_s.content_line_begin == defer_s.content_line_end) {
+                        // Single statement
+                        const content = defer_contents.get(defer_s.content_line_begin).?;
+                        const content_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{[c]s}", .{
+                            .s = "",
+                            .n = defer_s.indentation,
+                            .c = content,
+                        });
+                        defer allocator.free(content_line);
+                        try new_lines.append(allocator, .{
+                            .num = line.value.num,
+                            .chars = content_line,
+                        });
+                    } else {
+                        // Block
+                        const block_open_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{{", .{
+                            .s = "",
+                            .n = defer_s.indentation,
+                        });
+                        defer allocator.free(block_open_line);
+                        try new_lines.append(allocator, .{
+                            .num = line.value.num,
+                            .chars = block_open_line,
+                        });
+                        for (defer_s.content_line_begin + 1..defer_s.content_line_end) |line_num| {
+                            const content = defer_contents.get(line_num).?;
+                            const content_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{[c]s}", .{
+                                .s = "",
+                                .n = defer_s.indentation + 2,
+                                .c = content,
+                            });
+                            defer allocator.free(content_line);
+                            try new_lines.append(allocator, .{
+                                .num = line.value.num,
+                                .chars = content_line,
+                            });
+                        }
+                        const block_close_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}}}", .{
+                            .s = "",
+                            .n = defer_s.indentation,
+                        });
+                        defer allocator.free(block_close_line);
+                        try new_lines.append(allocator, .{
+                            .num = line.value.num,
+                            .chars = block_close_line,
+                        });
+                    }
                     changes_head = change.next;
                     continue;
                 },
@@ -840,8 +933,14 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
             const line_idx: usize = getIdxOfLineNum(lines, line.value.num).?;
             const content_line = lines.getAt(line_idx).?;
             const line_tokens = self.getTokensOfLine(line.value.num);
-            std.debug.assert(line_tokens[0].type == .@"defer");
-            const content_start = line_tokens[1].column;
+            var content_start: usize = 0;
+            if (line_tokens[0].type == .@"defer") {
+                // Single statement
+                content_start = line_tokens[1].column;
+            } else {
+                // One line inside the block
+                content_start = line_tokens[0].column;
+            }
             const line_content = content_line.chars[content_start..];
             try defer_contents.put(line.value.num, try allocator.dupe(u8, line_content));
             try lines.removeAt(allocator, line_idx);
@@ -891,7 +990,8 @@ pub fn printChanges(self: *Self) void {
             .defer_s => |defer_s| {
                 std.debug.print("    line: {d},\n", .{defer_s.line});
                 std.debug.print("    indentation: {d},\n", .{defer_s.indentation});
-                std.debug.print("    content_line: {d},\n", .{defer_s.content_line});
+                std.debug.print("    content_line_begin: {d},\n", .{defer_s.content_line_begin});
+                std.debug.print("    content_line_end: {d},\n", .{defer_s.content_line_end});
             },
             .defer_return_remove => |remove| {
                 std.debug.print("    line: {d},\n", .{remove.line});
