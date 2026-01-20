@@ -204,7 +204,7 @@ structs_with_fns: std.StringHashMap(void),
 pub fn init(allocator: std.mem.Allocator, file_content: []const u8) !Self {
     var lexer: Lexer = .init(file_content);
     try lexer.tokenize(allocator);
-    try lexer.printTokens();
+    // try lexer.printTokens();
     return .{
         .lexer = lexer,
         .changes = .{},
