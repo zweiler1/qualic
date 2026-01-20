@@ -949,7 +949,9 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
     const writer = &writer_allocating.writer;
     while (line_it) |line| {
         try writer.writeAll(line.value.chars);
-        try writer.writeByte('\n');
+        if (line.next != null) {
+            try writer.writeByte('\n');
+        }
         line_it = line.next;
     }
     try writer.flush();
