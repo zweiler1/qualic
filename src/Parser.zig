@@ -535,9 +535,22 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             }
         }
         if (tokens[i + 1].type == .l_paren and scope_level == 0) {
-            fn_type_line = token.line;
-            std.debug.assert(token.column > 0);
-            fn_type_end = token.column - 1;
+            // If the function starts at the very left then the line above it is considered to be the
+            // return type of the function
+            if (token.column > 0) {
+                fn_type_line = token.line;
+                fn_type_end = token.column - 1;
+            } else {
+                // Get the line above
+                std.debug.assert(token.line > 0);
+                const tokens_from_above = self.getTokensOfLine(token.line - 1);
+                const tok_len = tokens_from_above.len;
+                std.debug.assert(tok_len > 0);
+                fn_type_line = tokens_from_above[0].line;
+                const last_token = tokens_from_above[tok_len - 1];
+                std.debug.assert(last_token.type == .eol);
+                fn_type_end = last_token.column;
+            }
             continue;
         }
         if (tokens[i + 1].type != .dot) {

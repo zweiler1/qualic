@@ -23,7 +23,8 @@ int MyStruct_getX(MyStruct *self) { return self->x; }
 
 void someFunction() { printf("Hello, World!\n"); }
 
-int main(void) {
+int
+main(void) {
   if (false) {
     // This return should not be re-written
     return 0;
