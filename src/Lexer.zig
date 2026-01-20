@@ -1,115 +1,8 @@
 const std = @import("std");
 
+const Token = @import("Token.zig");
+
 const Self = @This();
-
-pub const TokenType = enum {
-    // other tokens
-    hashtag,
-    eol,
-    eof,
-    identifier,
-
-    // constants
-    string_literal,
-    char_literal,
-    number_literal,
-
-    // operators
-    l_paren, // (
-    r_paren, // )
-    l_bracket, // [
-    r_bracket, // ]
-    l_brace, // {
-    r_brace, // }
-    dot, // .
-    comma, // ,
-    colon, // :
-    semicolon, // ;
-    arrow, // ->
-    plus_plus, // ++
-    minus_minus, // --
-    @"and", // &
-    @"or", // |
-    exclamation, // !
-    plus, // +
-    minus, // -
-    mult, // *
-    slash, // /
-    mod, // %
-    l_shift, // <<
-    r_shift, // >>
-    lt, // <
-    gt, // >
-    assign, // =
-    le, // <=
-    ge, // >=
-    eq, // ==
-    neq, // !=
-    xor, // ^
-    peq, // +=
-    mieq, // -=
-    mueq, // *=
-    deq, // /=
-    xeq, // ^=
-
-    // custom keywords
-    @"defer",
-
-    // builtin types
-    void,
-    char,
-    double,
-    float,
-    short,
-    int,
-    long,
-
-    // type modifyer keywords
-    auto,
-    signed,
-    unsigned,
-    @"const",
-    sizeof,
-    static,
-    restrict,
-    @"volatile",
-    register,
-
-    // loop keywords
-    @"for",
-    do,
-    @"while",
-    @"break",
-    @"continue",
-
-    // switch keywords
-    @"switch",
-    default,
-    case,
-
-    // branching keywords
-    @"if",
-    @"else",
-    goto,
-
-    // function keywords
-    @"extern",
-    @"inline",
-    @"return",
-
-    // type definition keywords
-    typedef,
-    @"enum",
-    @"struct",
-    @"union",
-};
-
-pub const Token = struct {
-    type: TokenType,
-    line: usize,
-    column: usize,
-    lexeme: []const u8,
-};
 
 // The input of the lexer, it does not own it's input
 input: []const u8,
@@ -377,7 +270,7 @@ fn addIdentifierOrKeyword(
         start += 1;
     }
     const identifier: []const u8 = self.input[i.*..start];
-    const token_type: ?TokenType = std.meta.stringToEnum(TokenType, identifier);
+    const token_type: ?Token.Type = std.meta.stringToEnum(Token.Type, identifier);
     try self.tokens.append(allocator, .{
         .type = token_type orelse .identifier,
         .line = line,
@@ -393,7 +286,7 @@ fn addToken(
     i: *usize,
     line: usize,
     line_start: usize,
-    token_type: TokenType,
+    token_type: Token.Type,
     token_size: usize,
 ) !void {
     try self.tokens.append(allocator, .{

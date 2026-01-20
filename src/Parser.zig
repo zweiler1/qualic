@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Lexer = @import("Lexer.zig");
+const Token = @import("Token.zig");
 const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
 const Options = @import("main.zig").Options;
 
@@ -1063,7 +1064,7 @@ pub fn createHash(input: []const u8, hash: *[8]u8) void {
     }
 }
 
-fn getTokensOfLine(self: *Self, line_num: usize) []Lexer.Token {
+fn getTokensOfLine(self: *Self, line_num: usize) []Token {
     var i: usize = 0;
     while (self.lexer.tokens.items[i].line < line_num) {
         i += 1;
