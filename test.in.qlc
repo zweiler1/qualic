@@ -57,8 +57,10 @@ int main(void) {
   };
   memcpy(s.string, "Hello there it's steve", 23);
   defer s.deinit();
-  s.print();
-  MyStruct.print(&s);
+  defer {
+    s.print();
+    MyStruct.print(&s);
+  }
 
   // Defer stuff should be inserted here
   return s.getX();

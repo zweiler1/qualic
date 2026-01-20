@@ -363,12 +363,7 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
     var scope_level_of_last_return_statement: usize = 0;
     var fn_type_line: usize = 0;
     var fn_type_end: usize = 0;
-    var tokens_to_skip: usize = 0;
     for (tokens, 0..) |token, i| {
-        if (tokens_to_skip > 0) {
-            tokens_to_skip -= 1;
-            continue;
-        }
         // For now we search only for the pattern `identifier.identifier(` where the first
         // identifier is one of the structs containing function definitions. This also means
         // that qualic does not resolve things like `MyStruct.call(` when `MyStruct` does not
@@ -400,7 +395,6 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                         depth += 1;
                     }
                 }
-                tokens_to_skip = offset;
                 try defer_statements.append(allocator, .{
                     .line_begin = line_begin,
                     .line_end = tokens[i + offset].line,
@@ -639,16 +633,13 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     needs_swapping = swap_instance_and_namespace or swap_defer or swap_return;
                 }
                 if (needs_swapping) {
-                    std.debug.print("swapping nodes change:\n\t{any}\n and next:\n\t{any}\n", .{ change, next });
                     const next_next = next.next;
                     change.next = next_next;
                     next.next = change;
-                    std.debug.print("i = {d}\n", .{i});
                     if (i == 0) {
                         self.changes.head = next;
                     } else {
                         const last = self.changes.getNodeAt(i - 1).?;
-                        std.debug.print("last: {any}\n", .{last});
                         last.next = next;
                     }
                 }
@@ -657,8 +648,6 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         }
     }
     changes_head = self.changes.head;
-
-    self.printChanges();
 
     // Get all the lines from the lexer's input line by line
     var lines: SinglyLinkedList(Line) = .{};

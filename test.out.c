@@ -56,11 +56,13 @@ int main(void) {
       .string = (char *)malloc(23),
   };
   memcpy(s.string, "Hello there it's steve", 23);
-  MyStruct_print(&s);
-  MyStruct_print(&s);
 
   // Defer stuff should be inserted here
   int return_v9CCUckE = MyStruct_getX(&s);
+  {
+    MyStruct_print(&s);
+    MyStruct_print(&s);
+  }
   MyStruct_deinit(&s);
   printf("should run first\n");
   {
