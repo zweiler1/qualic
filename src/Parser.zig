@@ -600,9 +600,10 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
     // Sort all the changes
     var changes_head = self.changes.head;
     const changes_len = self.changes.len();
-    for (0..changes_len) |i| {
+    for (0..changes_len) |_| {
         changes_head = self.changes.head;
-        while (changes_head) |change| {
+        var i: usize = 0;
+        while (changes_head) |change| : (i += 1) {
             if (change.*.next) |next| {
                 const change_line = switch (change.value) {
                     .move => |move| move.fn_line,
@@ -633,18 +634,21 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     // their own, but it's just better that way. This means that we *always* try to
                     // put namespaces in front of instances.
                     const swap_instance_and_namespace = change.value == .instance and next.value == .namespace;
-                    const swap_defer = (change.value == .namespace or change.value == .instance) and next.value == .defer_s;
-                    const swap_return = (change.value == .namespace or change.value == .instance) and next.value == .defer_return_remove;
+                    const swap_defer = change.value == .defer_s and (next.value == .namespace or next.value == .instance);
+                    const swap_return = (change.value == .defer_return_remove or change.value == .defer_return_insert) and (next.value == .namespace or next.value == .instance);
                     needs_swapping = swap_instance_and_namespace or swap_defer or swap_return;
                 }
                 if (needs_swapping) {
+                    std.debug.print("swapping nodes change:\n\t{any}\n and next:\n\t{any}\n", .{ change, next });
                     const next_next = next.next;
                     change.next = next_next;
                     next.next = change;
+                    std.debug.print("i = {d}\n", .{i});
                     if (i == 0) {
                         self.changes.head = next;
                     } else {
                         const last = self.changes.getNodeAt(i - 1).?;
+                        std.debug.print("last: {any}\n", .{last});
                         last.next = next;
                     }
                 }
@@ -653,6 +657,8 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         }
     }
     changes_head = self.changes.head;
+
+    self.printChanges();
 
     // Get all the lines from the lexer's input line by line
     var lines: SinglyLinkedList(Line) = .{};
@@ -694,10 +700,6 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     }
                 } else {
                     // Block
-                    std.debug.print("defer_s.(begin, end) = ({d}, {d})\n", .{
-                        defer_s.content_line_begin,
-                        defer_s.content_line_end,
-                    });
                     if (getIdxOfLineNum(lines, defer_s.content_line_end)) |end_line_idx| {
                         try lines.removeAt(allocator, end_line_idx);
                     }

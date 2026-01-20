@@ -11,12 +11,15 @@ typedef struct MyStruct {
 } MyStruct;
 void MyStruct_print(MyStruct *self) asm("MyStruct.print");
 void MyStruct_deinit(MyStruct *self) asm("MyStruct.deinit");
+int MyStruct_getX(MyStruct *self) asm("MyStruct.getX");
 
 void MyStruct_print(MyStruct *self) {
   printf("(%i, %i, %i), %s\n", self->x, self->y, self->z, self->string);
 }
 
 void MyStruct_deinit(MyStruct *self) { free(self->string); }
+
+int MyStruct_getX(MyStruct *self) { return self->x; }
 
 void someFunction() { printf("Hello, World!\n"); }
 
@@ -57,7 +60,7 @@ int main(void) {
   MyStruct_print(&s);
 
   // Defer stuff should be inserted here
-  int tempvar_dLGVVt5v = 0;
+  int return_v9CCUckE = MyStruct_getX(&s);
   MyStruct_deinit(&s);
   printf("should run first\n");
   {

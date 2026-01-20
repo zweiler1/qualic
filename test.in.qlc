@@ -10,6 +10,7 @@ typedef struct MyStruct {
 
   void print(MyStruct *self);
   void deinit(MyStruct *self);
+  int getX(MyStruct *self);
 } MyStruct;
 
 void MyStruct.print(MyStruct *self) {
@@ -17,6 +18,8 @@ void MyStruct.print(MyStruct *self) {
 }
 
 void MyStruct.deinit(MyStruct *self) { free(self->string); }
+
+int MyStruct.getX(MyStruct *self) { return self->x; }
 
 void someFunction() { printf("Hello, World!\n"); }
 
@@ -58,5 +61,5 @@ int main(void) {
   MyStruct.print(&s);
 
   // Defer stuff should be inserted here
-  return 0;
+  return s.getX();
 }
