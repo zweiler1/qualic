@@ -21,13 +21,18 @@ void MyStruct_deinit(MyStruct *self) { free(self->string); }
 void someFunction() { printf("Hello, World!\n"); }
 
 int main(void) {
+  if (false) {
+    // This return should not be re-written
+    return 0;
+  }
   MyStruct *sp = (MyStruct *)malloc(sizeof(MyStruct));
 
   if (false) {
     // Defer stuff should be inserted here
+    int tempvar_wdK5Yxb6 = 0;
     printf("should run second\n");
     free(sp);
-    return 0;
+    return tempvar_wdK5Yxb6;
   }
 
   if (true) {
@@ -50,10 +55,10 @@ int main(void) {
   MyStruct_print(&s);
 
   // Defer stuff should be inserted here
+  int tempvar_dLGVVt5v = 0;
   MyStruct_deinit(&s);
   printf("should run first\n");
   printf("should run second\n");
   free(sp);
-  return 0;
+  return tempvar_dLGVVt5v;
 }
-

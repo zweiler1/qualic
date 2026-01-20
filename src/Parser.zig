@@ -79,6 +79,27 @@ pub const ChangeDeferStatement = struct {
     content_line: usize,
 };
 
+// The 'ChangeDeferReturnRemove' change is pretty simple. When we come across the `return`
+// statement line we do not emit `return <expr>;` but we emit `auto <tempvar> = <expr>;` that later
+// on, in the 'ChangeDeferReturnInsert' change we can insert the line `return <tempvar>;` This is
+// important because this way the return value is evaluated before any defer statements are inserted,
+// potentially freeing the value(s) needed for the return expression.
+pub const ChangeDeferReturnRemove = struct {
+    line: usize,
+    fn_type_line: usize,
+    // column of type end in line
+    fn_type_end: usize,
+    var_name: []const u8,
+};
+
+// The 'ChangeDeferReturnInsert' change simply emits the line `return <tempvar>;` with the given
+// indentation. The name of the temp variable is the result of a deterministic hashing function
+pub const ChangeDeferReturnInsert = struct {
+    line: usize,
+    indentation: usize,
+    var_name: []const u8,
+};
+
 // A change is just a small modification which needs to be done to the input.
 // A change can be one of these operations:
 //     - Moving out a function of a struct body and changing it's name accordingly
@@ -91,6 +112,8 @@ pub const Change = union(enum) {
     namespace: ChangeNamespaceCallOrDefinition,
     instance: ChangeInstanceCall,
     defer_s: ChangeDeferStatement,
+    defer_return_remove: ChangeDeferReturnRemove,
+    defer_return_insert: ChangeDeferReturnInsert,
 
     pub fn deinit(self: *Change, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -105,6 +128,12 @@ pub const Change = union(enum) {
                 allocator.free(instance.fn_name);
             },
             .defer_s => {},
+            .defer_return_remove => |remove| {
+                allocator.free(remove.var_name);
+            },
+            .defer_return_insert => |insert| {
+                allocator.free(insert.var_name);
+            },
         }
     }
 
@@ -137,6 +166,21 @@ pub const Change = union(enum) {
                     .line = defer_s.line,
                     .indentation = defer_s.indentation,
                     .content_line = defer_s.content_line,
+                },
+            },
+            .defer_return_remove => |remove| .{
+                .defer_return_remove = .{
+                    .line = remove.line,
+                    .fn_type_line = remove.fn_type_line,
+                    .fn_type_end = remove.fn_type_end,
+                    .var_name = try allocator.dupe(u8, remove.var_name),
+                },
+            },
+            .defer_return_insert => |insert| .{
+                .defer_return_insert = .{
+                    .line = insert.line,
+                    .indentation = insert.indentation,
+                    .var_name = try allocator.dupe(u8, insert.var_name),
                 },
             },
         };
@@ -298,7 +342,6 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
         // statement in a scope containg at least one 'defer' statement will be re re-written as well.
         // But re-writing the 'return' statement will be a task of future me. For now, the defer
         // statemnets will just be inserted right before the return statement if we come across one.
-        // TODO: Implement the re-writing of return statements
         scope_level: usize,
         // The indentation level of this defer statement's scope
         indent_lvl: usize,
@@ -312,6 +355,8 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
     // struct, enum or union definitions are not counted as scopes by this algorithm.
     var scope_level: usize = 0;
     var scope_level_of_last_return_statement: usize = 0;
+    var fn_type_line: usize = 0;
+    var fn_type_end: usize = 0;
     for (tokens, 0..) |token, i| {
         // For now we search only for the pattern `identifier.identifier(` where the first
         // identifier is one of the structs containing function definitions. This also means
@@ -335,8 +380,26 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             // We apply all known defer statements at the line above this one, which means the 'line'
             // in the defer change will be the line of this return statement. The indentation of the
             // defer statement is based on the indentation of this return statement.
-            // TODO: Implement storing the rhs of the return statement here
             var idx: usize = defer_statements.items.len;
+            const split_return: bool = idx > 0;
+            var tempvar_name_hashed: []const u8 = undefined;
+            if (split_return) {
+                // There are pending defer statements, which means the return statement needs to be
+                // split into two parts here.
+                const tempvar_name: []const u8 = try std.fmt.allocPrint(allocator, "tempvar_{d}", .{scope_level});
+                defer allocator.free(tempvar_name);
+                var hash: [8]u8 = undefined;
+                createHash(tempvar_name, &hash);
+                tempvar_name_hashed = try std.fmt.allocPrint(allocator, "tempvar_{s}", .{hash});
+                try self.changes.append(allocator, .{
+                    .defer_return_remove = .{
+                        .line = token.line,
+                        .fn_type_line = fn_type_line,
+                        .fn_type_end = fn_type_end,
+                        .var_name = tempvar_name_hashed,
+                    },
+                });
+            }
             while (idx > 0) : (idx -= 1) {
                 try self.changes.append(allocator, .{
                     .defer_s = .{
@@ -347,6 +410,16 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                         .content_line = defer_statements.items[idx - 1].line,
                     },
                 });
+            }
+            if (split_return) {
+                try self.changes.append(allocator, .{
+                    .defer_return_insert = .{
+                        .line = token.line,
+                        .indentation = token.column,
+                        .var_name = tempvar_name_hashed,
+                    },
+                });
+                allocator.free(tempvar_name_hashed);
             }
             scope_level_of_last_return_statement = scope_level;
             continue;
@@ -386,6 +459,7 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                     });
                     _ = defer_statements.pop();
                 }
+                scope_level -= 1;
                 scope_level_of_last_return_statement = 0;
                 continue;
             }
@@ -422,6 +496,12 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
                 }
                 continue;
             }
+        }
+        if (tokens[i + 1].type == .l_paren and scope_level == 0) {
+            fn_type_line = token.line;
+            std.debug.assert(token.column > 0);
+            fn_type_end = token.column - 1;
+            continue;
         }
         if (tokens[i + 1].type != .dot) {
             // The struct type is not followed by a dot
@@ -493,12 +573,16 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     .namespace => |namespace| namespace.line,
                     .instance => |instance| instance.line,
                     .defer_s => |defer_s| defer_s.line,
+                    .defer_return_remove => |remove| remove.line,
+                    .defer_return_insert => |insert| insert.line,
                 };
                 const next_line = switch (next.value) {
                     .move => |move| move.fn_line,
                     .namespace => |namespace| namespace.line,
                     .instance => |instance| instance.line,
                     .defer_s => |defer_s| defer_s.line,
+                    .defer_return_remove => |remove| remove.line,
+                    .defer_return_insert => |insert| insert.line,
                 };
                 var needs_swapping: bool = false;
                 if (next_line < change_line) {
@@ -512,8 +596,9 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     // all instances (also sorted would be good). They do not *need* to be sorted in
                     // their own, but it's just better that way. This means that we *always* try to
                     // put namespaces in front of instances.
-                    needs_swapping = change.value == .instance and next.value == .namespace or //
-                        (change.value == .namespace or change.value == .instance) and next.value == .defer_s;
+                    const swap_instance_and_namespace = change.value == .instance and next.value == .namespace;
+                    const swap_defer = (change.value == .namespace or change.value == .instance) and next.value == .defer_s;
+                    needs_swapping = swap_instance_and_namespace or swap_defer;
                 }
                 if (needs_swapping) {
                     const next_next = next.next;
@@ -564,14 +649,12 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
     var changes_iter = self.changes.iter();
     while (changes_iter.next()) |change| {
         switch (change.*) {
-            .move => {},
-            .namespace => {},
-            .instance => {},
             .defer_s => |defer_s| {
                 if (defer_contents.get(defer_s.content_line) == null) {
                     try defer_contents.put(defer_s.content_line, undefined);
                 }
             },
+            else => {},
         }
     }
 
@@ -695,7 +778,7 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     continue;
                 },
                 .defer_s => |defer_s| {
-                    if (line.value.num != defer_s.line) {
+                    if (line.value.num < defer_s.line) {
                         break :blk;
                     }
                     const content = defer_contents.get(defer_s.content_line).?;
@@ -708,6 +791,44 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
                     try new_lines.append(allocator, .{
                         .num = line.value.num,
                         .chars = content_line,
+                    });
+                    changes_head = change.next;
+                    continue;
+                },
+                .defer_return_remove => |remove| {
+                    if (line.value.num != remove.line) {
+                        break :blk;
+                    }
+                    const fn_line_idx = getIdxOfLineNum(lines, remove.fn_type_line).?;
+                    const fn_line = lines.getAt(fn_line_idx).?;
+                    const fn_type = fn_line.chars[0..remove.fn_type_end];
+                    const replacement = try std.fmt.allocPrint(allocator, "{s} {s} =", .{ fn_type, remove.var_name });
+                    defer allocator.free(replacement);
+                    const formatted_line = try std.mem.replaceOwned(u8, allocator, line.value.chars, "return", replacement);
+                    defer allocator.free(formatted_line);
+                    try new_lines.append(allocator, .{
+                        .num = line.value.num,
+                        .chars = formatted_line,
+                    });
+                    const line_idx: usize = lines.getIdxOf(&line.value).?;
+                    line_it = line.next;
+                    try lines.removeAt(allocator, line_idx);
+                    changes_head = change.next;
+                    continue;
+                },
+                .defer_return_insert => |insert| {
+                    if (line.value.num < insert.line) {
+                        break :blk;
+                    }
+                    const return_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}return {[c]s};", .{
+                        .s = "",
+                        .n = insert.indentation,
+                        .c = insert.var_name,
+                    });
+                    defer allocator.free(return_line);
+                    try new_lines.append(allocator, .{
+                        .num = line.value.num,
+                        .chars = return_line,
                     });
                     changes_head = change.next;
                     continue;
@@ -771,6 +892,17 @@ pub fn printChanges(self: *Self) void {
                 std.debug.print("    line: {d},\n", .{defer_s.line});
                 std.debug.print("    indentation: {d},\n", .{defer_s.indentation});
                 std.debug.print("    content_line: {d},\n", .{defer_s.content_line});
+            },
+            .defer_return_remove => |remove| {
+                std.debug.print("    line: {d},\n", .{remove.line});
+                std.debug.print("    fn_type_line: {d},\n", .{remove.fn_type_line});
+                std.debug.print("    fn_type_end: {d},\n", .{remove.fn_type_end});
+                std.debug.print("    var_name: \"{s}\",\n", .{remove.var_name});
+            },
+            .defer_return_insert => |insert| {
+                std.debug.print("    line: {d},\n", .{insert.line});
+                std.debug.print("    indentation: {d},\n", .{insert.indentation});
+                std.debug.print("    var_name: \"{s}\",\n", .{insert.var_name});
             },
         }
         std.debug.print("}}\n", .{});
