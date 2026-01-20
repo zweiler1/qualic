@@ -396,12 +396,11 @@ fn addToken(
     token_type: TokenType,
     token_size: usize,
 ) !void {
-    std.debug.assert(token_size > 0);
     try self.tokens.append(allocator, .{
         .type = token_type,
         .line = line,
         .column = i.* - line_start,
-        .lexeme = self.input[i.* .. i.* + token_size],
+        .lexeme = if (token_size > 0) self.input[i.* .. i.* + token_size] else "",
     });
     if (token_size > 1) {
         i.* += token_size - 1;
