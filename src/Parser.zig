@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Lexer = @import("Lexer.zig");
 const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
+const Options = @import("main.zig").Options;
 
 const Self = @This();
 
@@ -201,14 +202,20 @@ changes: SinglyLinkedList(Change),
 // A list of all struct types which contain functions
 structs_with_fns: std.StringHashMap(void),
 
-pub fn init(allocator: std.mem.Allocator, file_content: []const u8) !Self {
+// The options of the cli parser from main
+options: Options,
+
+pub fn init(allocator: std.mem.Allocator, file_content: []const u8, options: Options) !Self {
     var lexer: Lexer = .init(file_content);
     try lexer.tokenize(allocator);
-    // try lexer.printTokens();
+    if (options.verbose) {
+        try lexer.printTokens();
+    }
     return .{
         .lexer = lexer,
         .changes = .{},
         .structs_with_fns = .init(allocator),
+        .options = options,
     };
 }
 
@@ -648,6 +655,11 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         }
     }
     changes_head = self.changes.head;
+    if (self.options.verbose) {
+        std.debug.print("\n------ Changes Start ------\n", .{});
+        self.printChanges();
+        std.debug.print("\n------ Changes End ------\n", .{});
+    }
 
     // Get all the lines from the lexer's input line by line
     var lines: SinglyLinkedList(Line) = .{};

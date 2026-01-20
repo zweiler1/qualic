@@ -50,10 +50,10 @@ int main(void) {
 
   someFunction();
   MyStruct s = (MyStruct){
-      .x = 0b10,
-      .y = 0xFF,
-      .z = 0o30,
-      .string = (char *)malloc(23),
+    .x = 0b10,
+    .y = 0xFF,
+    .z = 0o30,
+    .string = (char *)malloc(23),
   };
   memcpy(s.string, "Hello there it's steve", 23);
 

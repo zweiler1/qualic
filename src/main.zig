@@ -20,16 +20,20 @@ const VERSION = "0.0.1";
 
 const params = clap.parseParamsComptime(
     \\-h, --help             display this help and exit
+    \\-d, --dry              does a dry-run, prints to stdout but does not write to any file
     \\-o, --out <OUTPUT>     the output .c file of qualic (default: quali.c)
     \\-p, --preprocess       run the c preprocessor before applying the qualic changes
     \\-v, --version          print the version of the qualic preprocessor
+    \\-V, --verbose          prints a lot of in-between output and debug information
     \\<INPUT>                the .qlc file to "transpile" (pre-process) to a .c output file
 );
 
-const Options = struct {
-    output: []const u8,
-    input: []const u8,
-    preprocess: bool,
+pub const Options = struct {
+    dry: bool = false,
+    output: []const u8 = "quali.c",
+    input: []const u8 = undefined,
+    preprocess: bool = false,
+    verbose: bool = false,
 };
 
 pub fn main() !void {
@@ -79,8 +83,10 @@ pub fn main() !void {
 
     const options: Options = .{
         .input = res.positionals[0].?,
+        .dry = res.args.dry != 0,
         .output = res.args.out orelse "quali.c",
         .preprocess = res.args.preprocess != 0,
+        .verbose = res.args.verbose != 0,
     };
     // std.debug.print("options: {{ .input = \"{s}\", .output = \"{s}\", .preprocess = {any} }}\n", .{
     //     options.input,
@@ -116,15 +122,23 @@ pub fn main() !void {
     if (bytes_read != stat.size) {
         std.debug.print("Not all bytes read! {d}/{d}\n", .{ bytes_read, stat.size });
     }
-    // std.debug.print("------ Input Start ------\n{s}\n------ Input End ------\n", .{file_content});
+    if (options.verbose) {
+        std.debug.print("------ Input Start ------\n{s}\n------ Input End ------\n", .{file_content});
+    }
 
     // Try to parse and apply all changes in one go
-    var parser: Parser = try .init(allocator, file_content);
+    var parser: Parser = try .init(allocator, file_content, options);
     defer parser.deinit(allocator);
     try parser.parse(allocator);
     // Apply all the changes and get the combined file back
     const parser_output: []const u8 = try parser.apply(allocator);
     defer allocator.free(parser_output);
+
+    if (options.dry) {
+        try stdout.print("{s}", .{parser_output});
+        try stdout.flush();
+        return;
+    }
 
     // Write the parser output into the output file
     const out_file = std.fs.cwd().createFile(options.output, .{ .truncate = true }) catch |err| {
