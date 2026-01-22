@@ -6,7 +6,6 @@ const Self = @This();
 
 // The input of the lexer, it does not own it's input
 input: []const u8,
-
 // A list of all tokens this lexer has created from it's input
 tokens: std.ArrayList(Token),
 
@@ -31,7 +30,7 @@ pub fn tokenize(self: *Self, allocator: std.mem.Allocator) !void {
     var i: usize = 0;
     var line: usize = 1;
     var line_start: usize = 0;
-    while (i < self.input.len) {
+    while (i < self.input.len) : (i += 1) {
         switch (self.input[i]) {
             else => {
                 // Skip spaces, crash on everything else until now to detect unhandled tokens
@@ -77,7 +76,7 @@ pub fn tokenize(self: *Self, allocator: std.mem.Allocator) !void {
                 // Check if first digit is a 0, then hex, oct or binary values could follow
                 if (self.input[i] == '0' and i + 1 < self.input.len) {
                     switch (self.input[i + 1]) {
-                        'x', 'X', 'b', 'B', 'o', 'O', '0'...'9' => i += 1,
+                        'x', 'X', 'b', 'B', 'o', 'O' => i += 1,
                         else => {},
                     }
                 }
@@ -184,7 +183,6 @@ pub fn tokenize(self: *Self, allocator: std.mem.Allocator) !void {
                 else => try self.addToken(allocator, &i, line, line_start, .xor, 1),
             },
         }
-        i += 1;
     }
     try self.tokens.append(allocator, .{
         .type = .eof,
@@ -202,7 +200,7 @@ pub fn printTokens(self: *Self) !void {
 
     // format "line:col" into a small stack buffer to measure length
     for (self.tokens.items) |token| {
-        var tmp_buf: [32]u8 = undefined;
+        var tmp_buf: [32]u8 = [_]u8{0} ** 32;
         const pos = try std.fmt.bufPrint(&tmp_buf, "{d}:{d}", .{ token.line, token.column });
         if (pos.len > max_pos) max_pos = pos.len;
 
@@ -213,7 +211,7 @@ pub fn printTokens(self: *Self) !void {
     }
 
     for (self.tokens.items) |token| {
-        var pos_buf: [32]u8 = undefined;
+        var pos_buf: [32]u8 = [_]u8{0} ** 32;
         const pos = try std.fmt.bufPrint(&pos_buf, "{d}:{d}", .{ token.line, token.column });
 
         // use named fields so we can pass the runtime width values:
@@ -259,17 +257,17 @@ fn addIdentifierOrKeyword(
     line: usize,
     line_start: usize,
 ) !void {
-    var start: usize = i.*;
+    var end: usize = i.*;
     // Get how long the identifier is
     // Skip the first character which is only allowed to be one of these
-    if (self.input[start] >= 'a' and self.input[start] <= 'z' or self.input[start] >= 'A' and self.input[start] <= 'Z' or self.input[start] == '_') {
-        start += 1;
+    if (self.input[end] >= 'a' and self.input[end] <= 'z' or self.input[end] >= 'A' and self.input[end] <= 'Z' or self.input[end] == '_') {
+        end += 1;
     }
     // Then skip all following characters which are allowed to contain numbers too
-    while (self.input[start] >= 'a' and self.input[start] <= 'z' or self.input[start] >= 'A' and self.input[start] <= 'Z' or self.input[start] == '_' or self.input[start] >= '0' and self.input[start] <= '9') {
-        start += 1;
+    while (self.input[end] >= 'a' and self.input[end] <= 'z' or self.input[end] >= 'A' and self.input[end] <= 'Z' or self.input[end] == '_' or self.input[end] >= '0' and self.input[end] <= '9') {
+        end += 1;
     }
-    const identifier: []const u8 = self.input[i.*..start];
+    const identifier: []const u8 = self.input[i.*..end];
     const token_type: ?Token.Type = std.meta.stringToEnum(Token.Type, identifier);
     try self.tokens.append(allocator, .{
         .type = token_type orelse .identifier,
@@ -277,7 +275,7 @@ fn addIdentifierOrKeyword(
         .column = i.* - line_start,
         .lexeme = identifier,
     });
-    i.* = start - 1;
+    i.* = end - 1;
 }
 
 fn addToken(

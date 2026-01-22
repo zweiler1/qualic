@@ -1,5 +1,9 @@
 const std = @import("std");
 
+const changes_file = @import("changes.zig");
+
+const File = @import("File.zig");
+const Line = @import("Line.zig");
 const Lexer = @import("Lexer.zig");
 const Token = @import("Token.zig");
 const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
@@ -7,216 +11,23 @@ const Options = @import("main.zig").Options;
 
 const Self = @This();
 
-// A line is simple, it has a number and it owns a slice of characters in that line
-pub const Line = struct {
-    num: usize,
-    chars: []u8,
-
-    pub fn deinit(self: *Line, allocator: std.mem.Allocator) void {
-        allocator.free(self.chars);
-    }
-
-    pub fn clone(self: *const Line, allocator: std.mem.Allocator) anyerror!Line {
-        return .{
-            .num = self.num,
-            .chars = try allocator.dupe(u8, self.chars),
-        };
-    }
-
-    pub fn eql(self: *const Line, other: *const Line) bool {
-        return self.num == other.num;
-    }
-};
-
-// The 'ChangeMoveFunction' change moves a function from within a struct body after it, for this it
-// needs to know where the function starts and ends respectively. For now we only have full lines
-// for each function. It also contains in which struct the changed function was contained in and it
-// also contains where that struct's body ends so that we can place the function after it. Only
-// definitions are allowed to be written inside a struct definition, this means that the function
-// line can be a single line
-pub const ChangeMoveFunction = struct {
-    fn_line: usize,
-    fn_name: []const u8,
-    struct_end_line: usize,
-    struct_type_name: []const u8,
-};
-
-// The 'ChangeNamespaceCall' change simply changes a namespace call like `StructType.call(...)` to
-// the form of `StructType_call(...)`. This means that it does only need to replace the `.` character
-// with a `_` character in the correct position. This is why this change struct only contains the
-// line and column information where to find that `.` character.
-// It could also be a namespaced function definition like `StructType.call(...) {...` for example
-// The same rules apply as with namespaced calls themselves, we simply replace the `.` with a `_`.
-pub const ChangeNamespaceCallOrDefinition = struct {
-    line: usize,
-    column: usize,
-};
-
-// The 'ChangeInstanceCall' change is a bit more complex, because when parsing it we need to find the
-// type of the instance in the pattern like `s.call(...)` we need to analyze the scope the variable
-// `s` is in to find it's type, but because the variable can only be of type struct it is a bit easier
-// to find out where it's defined, just search for that variable in the given scope with an occurrence
-// where it is prefixed with one of the known scoping-struct types, even if it's defined like
-// `struct StructType s` we can still simply look at the identifier right in front of it. This makes
-// it a bit easier overall.
-// The `ChangeInstanceCall` struct contains the information of which type the instance is, where the
-// instance call starts (line + column) and the name of the instance variable itself.
-pub const ChangeInstanceCall = struct {
-    line: usize,
-    type: []const u8,
-    instance: []const u8,
-    fn_name: []const u8,
-};
-
-// The 'ChangeDeferStatement' change is a bit more complex. It can only happen within a function,
-// the defer keyword is not allowed outside of a function scope. We need to remember all defer
-// statements in their correct ordering, remember in which scope level they were defined in, and
-// when the scope ends then we need to apply all the defer statements in backwards ordering. This
-// is not as hard to do as i initially thought simply because of the ground-work of the instance
-// analysis pass. This is the reason why collecting all defer statements is done in the same pass
-// as the `ChangeInstanceCall` is.
-pub const ChangeDeferStatement = struct {
-    line: usize,
-    indentation: usize,
-    // If content_line_begin == content_line_ned then it's a defer statement like `defer <expr>;`
-    // If they differ then it's a defer block like `defer { ... }`
-    content_line_begin: usize,
-    content_line_end: usize,
-};
-
-// The 'ChangeDeferReturnRemove' change is pretty simple. When we come across the `return`
-// statement line we do not emit `return <expr>;` but we emit `<type> <return_HASH> = <expr>;`
-// that later on, in the 'ChangeDeferReturnInsert' change we can insert the line
-// `return <return_HASH>;` This is important because this way the return value is evaluated
-// before any defer statements are inserted, potentially freeing the value(s) needed for the return
-// expression.
-pub const ChangeDeferReturnRemove = struct {
-    line: usize,
-    fn_type_line: usize,
-    // column of type end in line
-    fn_type_end: usize,
-    var_name: []const u8,
-};
-
-// The 'ChangeDeferReturnInsert' change simply emits the line `return <return_HASH>;` with the
-// given indentation. The name of the temp variable is the result of a deterministic hashing function
-pub const ChangeDeferReturnInsert = struct {
-    line: usize,
-    indentation: usize,
-    var_name: []const u8,
-};
-
-// A change is just a small modification which needs to be done to the input.
-// A change can be one of these operations:
-//     - Moving out a function of a struct body and changing it's name accordingly
-//     - Changing a namespaced call like `StructType.call(...)` to `StructType_call(...)`
-//     - Changing an instance call like `s.call(...)` to `StructType_call(&s, ...)`
-//     - Defer for statements, like `defer <statement>;`
-//     - Defer for blocks (not implemented yet)
-pub const Change = union(enum) {
-    move: ChangeMoveFunction,
-    namespace: ChangeNamespaceCallOrDefinition,
-    instance: ChangeInstanceCall,
-    defer_s: ChangeDeferStatement,
-    defer_return_remove: ChangeDeferReturnRemove,
-    defer_return_insert: ChangeDeferReturnInsert,
-
-    pub fn deinit(self: *Change, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            .move => |move| {
-                allocator.free(move.fn_name);
-                allocator.free(move.struct_type_name);
-            },
-            .namespace => {},
-            .instance => |instance| {
-                allocator.free(instance.type);
-                allocator.free(instance.instance);
-                allocator.free(instance.fn_name);
-            },
-            .defer_s => {},
-            .defer_return_remove => |remove| {
-                allocator.free(remove.var_name);
-            },
-            .defer_return_insert => |insert| {
-                allocator.free(insert.var_name);
-            },
-        }
-    }
-
-    pub fn clone(self: *const Change, allocator: std.mem.Allocator) anyerror!Change {
-        return switch (self.*) {
-            .move => |move| .{
-                .move = .{
-                    .fn_line = move.fn_line,
-                    .fn_name = try allocator.dupe(u8, move.fn_name),
-                    .struct_end_line = move.struct_end_line,
-                    .struct_type_name = try allocator.dupe(u8, move.struct_type_name),
-                },
-            },
-            .namespace => |namespace| .{
-                .namespace = .{
-                    .line = namespace.line,
-                    .column = namespace.column,
-                },
-            },
-            .instance => |instance| .{
-                .instance = .{
-                    .line = instance.line,
-                    .type = try allocator.dupe(u8, instance.type),
-                    .instance = try allocator.dupe(u8, instance.instance),
-                    .fn_name = try allocator.dupe(u8, instance.fn_name),
-                },
-            },
-            .defer_s => |defer_s| .{
-                .defer_s = .{
-                    .line = defer_s.line,
-                    .indentation = defer_s.indentation,
-                    .content_line_begin = defer_s.content_line_begin,
-                    .content_line_end = defer_s.content_line_end,
-                },
-            },
-            .defer_return_remove => |remove| .{
-                .defer_return_remove = .{
-                    .line = remove.line,
-                    .fn_type_line = remove.fn_type_line,
-                    .fn_type_end = remove.fn_type_end,
-                    .var_name = try allocator.dupe(u8, remove.var_name),
-                },
-            },
-            .defer_return_insert => |insert| .{
-                .defer_return_insert = .{
-                    .line = insert.line,
-                    .indentation = insert.indentation,
-                    .var_name = try allocator.dupe(u8, insert.var_name),
-                },
-            },
-        };
-    }
-};
-
 // This parser owns the lexer instance
 lexer: Lexer,
-
 // A list of all changes which need to be done to the source code
-changes: SinglyLinkedList(Change),
-
+changes: SinglyLinkedList(changes_file.Change),
 // A list of all struct types which contain functions
 structs_with_fns: std.StringHashMap(void),
 
-// The options of the cli parser from main
-options: Options,
-
-pub fn init(allocator: std.mem.Allocator, file_content: []const u8, options: Options) !Self {
+pub fn init(allocator: std.mem.Allocator, file_content: []const u8, verbose_output: bool) !Self {
     var lexer: Lexer = .init(file_content);
     try lexer.tokenize(allocator);
-    if (options.verbose) {
+    if (verbose_output) {
         try lexer.printTokens();
     }
     return .{
         .lexer = lexer,
         .changes = .{},
         .structs_with_fns = .init(allocator),
-        .options = options,
     };
 }
 
@@ -239,7 +50,7 @@ pub fn parseStructFunctions(self: *Self, allocator: std.mem.Allocator) !void {
     };
     var in_struct_scope: ?StructScope = null;
 
-    var struct_change_list: std.ArrayList(ChangeMoveFunction) = .empty;
+    var struct_change_list: std.ArrayList(changes_file.ChangeMoveFunction) = .empty;
     defer struct_change_list.deinit(allocator);
 
     const tokens = self.lexer.tokens.items;
@@ -418,13 +229,13 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
             // defer statement is based on the indentation of this return statement.
             var idx: usize = defer_statements.items.len;
             const split_return: bool = idx > 0;
-            var return_name_hashed: []const u8 = undefined;
+            var return_name_hashed: []const u8 = "";
             if (split_return) {
                 // There are pending defer statements, which means the return statement needs to be
                 // split into two parts here.
                 const return_name: []const u8 = try std.fmt.allocPrint(allocator, "return_{d}", .{scope_level});
                 defer allocator.free(return_name);
-                var hash: [8]u8 = undefined;
+                var hash: [8]u8 = [_]u8{0} ** 8;
                 createHash(return_name, &hash);
                 return_name_hashed = try std.fmt.allocPrint(allocator, "return_{s}", .{hash});
                 try self.changes.append(allocator, .{
@@ -611,7 +422,133 @@ pub fn parseCalls(self: *Self, allocator: std.mem.Allocator) !void {
 }
 
 /// Caller owns the returned string
-pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
+pub fn apply(self: *Self, allocator: std.mem.Allocator) !File {
+    // Get all the lines from the lexer's input line by line
+    var input_file: File = try .create(allocator, self.lexer.input);
+    defer input_file.deinit(allocator);
+
+    var defer_contents: std.AutoHashMap(usize, []const u8) = .init(allocator);
+    try self.collectDeferContents(allocator, &defer_contents, &input_file);
+    defer freeDeferContents(allocator, &defer_contents);
+
+    // Apply all changes
+    var output_file: File = .{};
+    var line_it = input_file.lines.head;
+    // We take the first move change we can find and move all lines from the input to the
+    // output until we reach the first move line
+    var struct_end_added: std.StringHashMap(void) = .init(allocator);
+    defer struct_end_added.deinit();
+    var changes_head = self.changes.head;
+    while (line_it) |line| {
+        if (changes_head) |change| {
+            sw: switch (change.value) {
+                .move => |move| {
+                    if (line.value.num < move.fn_line) {
+                        break :sw;
+                    }
+                    try applyMove(allocator, move, &struct_end_added, &input_file, &output_file, line.value.num);
+                    // Remove the function definition line from the input so that it id not added twice
+                    const line_idx: usize = input_file.lines.getIdxOf(&line.value).?;
+                    line_it = line.next;
+                    try input_file.lines.removeAt(allocator, line_idx);
+                    changes_head = change.next;
+                    continue;
+                },
+                .namespace => |namespace| {
+                    if (line.value.num != namespace.line) {
+                        break :sw;
+                    }
+                    // Modify the input line directly without adding it to the output. This way other
+                    // changes to this line (for example from the `instance`) can still take effect.
+                    line.value.chars[namespace.column] = '_';
+                    changes_head = change.next;
+                    continue;
+                },
+                .instance => |instance| {
+                    if (line.value.num != instance.line) {
+                        break :sw;
+                    }
+                    const new_line = try applyInstance(allocator, instance, line.value.chars);
+                    allocator.free(line.value.chars);
+                    line.value.chars = new_line;
+                    changes_head = change.next;
+                    continue;
+                },
+                .defer_s => |defer_s| {
+                    if (line.value.num < defer_s.line) {
+                        break :sw;
+                    }
+                    try applyDeferStatement(allocator, defer_s, &defer_contents, &output_file, line.value.num);
+                    changes_head = change.next;
+                    continue;
+                },
+                .defer_return_remove => |remove| {
+                    if (line.value.num != remove.line) {
+                        break :sw;
+                    }
+                    const fn_line_idx = getIdxOfLineNum(input_file.lines, remove.fn_type_line).?;
+                    const fn_line = input_file.lines.getAt(fn_line_idx).?;
+                    const fn_type = fn_line.chars[0..remove.fn_type_end];
+                    const replacement = try std.fmt.allocPrint(allocator, "{s} {s} =", .{ fn_type, remove.var_name });
+                    defer allocator.free(replacement);
+                    const formatted_line = try std.mem.replaceOwned(u8, allocator, line.value.chars, "return", replacement);
+                    defer allocator.free(formatted_line);
+                    try output_file.lines.append(allocator, .{
+                        .num = line.value.num,
+                        .chars = formatted_line,
+                    });
+                    const line_idx: usize = input_file.lines.getIdxOf(&line.value).?;
+                    line_it = line.next;
+                    try input_file.lines.removeAt(allocator, line_idx);
+                    changes_head = change.next;
+                    continue;
+                },
+                .defer_return_insert => |insert| {
+                    if (line.value.num < insert.line) {
+                        break :sw;
+                    }
+                    const return_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}return {[c]s};", .{
+                        .s = "",
+                        .n = insert.indentation,
+                        .c = insert.var_name,
+                    });
+                    defer allocator.free(return_line);
+                    try output_file.lines.append(allocator, .{
+                        .num = line.value.num,
+                        .chars = return_line,
+                    });
+                    changes_head = change.next;
+                    continue;
+                },
+            }
+        }
+        if (defer_contents.get(line.value.num) != null) {
+            // This content line has not been removed from the input yet and it's marked as "dirty"
+            const line_idx: usize = getIdxOfLineNum(input_file.lines, line.value.num).?;
+            const content_line = input_file.lines.getAt(line_idx).?;
+            const line_tokens = self.getTokensOfLine(line.value.num);
+            var content_start: usize = 0;
+            if (line_tokens[0].type == .@"defer") {
+                // Single statement
+                content_start = line_tokens[1].column;
+            } else {
+                // One line inside the block
+                content_start = line_tokens[0].column;
+            }
+            const line_content = content_line.chars[content_start..];
+            try defer_contents.put(line.value.num, try allocator.dupe(u8, line_content));
+            try input_file.lines.removeAt(allocator, line_idx);
+            line_it = line.next;
+            continue;
+        }
+        try output_file.lines.append(allocator, line.value);
+        line_it = line.next;
+    }
+
+    return output_file;
+}
+
+pub fn sortChanges(self: *Self, verbose_output: bool) void {
     // Sort all the changes
     var changes_head = self.changes.head;
     const changes_len = self.changes.len();
@@ -669,322 +606,14 @@ pub fn apply(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
         }
     }
     changes_head = self.changes.head;
-    if (self.options.verbose) {
+    if (verbose_output) {
         std.debug.print("\n------ Changes Start ------\n", .{});
         self.printChanges();
         std.debug.print("\n------ Changes End ------\n", .{});
     }
-
-    // Get all the lines from the lexer's input line by line
-    var lines: SinglyLinkedList(Line) = .{};
-    defer lines.clearAndFree(allocator);
-    var it = std.mem.splitScalar(u8, self.lexer.input, '\n');
-    var line_id: usize = 1;
-    while (it.next()) |line| : (line_id += 1) {
-        // The line itself duplicates the line chars in it's "clone" call
-        const line_cpy: []u8 = try allocator.dupe(u8, line);
-        defer allocator.free(line_cpy);
-        try lines.append(allocator, .{
-            .num = line_id,
-            .chars = line_cpy,
-        });
-    }
-
-    // Collect which lines are sources of the defer statements. We mark these lines as "dirty" and
-    // once we reach those lines in the loop below we do not output them but actually put them into
-    // this map. For now this map only contains undefined strings, and it needs to be filled during
-    // the loop execution. We can do this because by the time we actually need the information
-    // (when we generate the statements from the defers) the actual definition of the defer was
-    // many lines higher up.
-    var defer_contents: std.AutoHashMap(usize, []const u8) = .init(allocator);
-    defer defer_contents.deinit();
-    defer {
-        var defer_iter = defer_contents.iterator();
-        while (defer_iter.next()) |content| {
-            allocator.free(content.value_ptr.*);
-        }
-    }
-    var changes_iter = self.changes.iter();
-    while (changes_iter.next()) |change| {
-        switch (change.*) {
-            .defer_s => |defer_s| {
-                if (defer_s.content_line_begin == defer_s.content_line_end) {
-                    // Single statement
-                    if (defer_contents.get(defer_s.content_line_begin) == null) {
-                        try defer_contents.put(defer_s.content_line_begin, undefined);
-                    }
-                } else {
-                    // Block
-                    if (getIdxOfLineNum(lines, defer_s.content_line_end)) |end_line_idx| {
-                        try lines.removeAt(allocator, end_line_idx);
-                    }
-                    if (getIdxOfLineNum(lines, defer_s.content_line_begin)) |begin_line_idx| {
-                        try lines.removeAt(allocator, begin_line_idx);
-                    }
-                    for (defer_s.content_line_begin + 1..defer_s.content_line_end) |line_num| {
-                        if (defer_contents.get(line_num) == null) {
-                            try defer_contents.put(line_num, undefined);
-                        }
-                    }
-                }
-            },
-            else => {},
-        }
-    }
-
-    // Apply all changes
-    var new_lines: SinglyLinkedList(Line) = .{};
-    defer new_lines.clearAndFree(allocator);
-    var line_it = lines.head;
-    // We take the first move change we can find and move all lines from the input to the
-    // output until we reach the first move line
-    var struct_end_added: std.StringHashMap(void) = .init(allocator);
-    defer struct_end_added.deinit();
-    while (line_it) |line| {
-        if (changes_head) |change| {
-            blk: switch (change.value) {
-                .move => |move| {
-                    if (line.value.num < move.fn_line) {
-                        break :blk;
-                    }
-                    // If the 'struct_end_added' map does not contain an entry for the current struct type
-                    // then we need to first add the struct end line to the output lines and remove it from
-                    // the input lines all together
-                    if (struct_end_added.getKey(move.struct_type_name) == null) {
-                        const line_idx: usize = getIdxOfLineNum(lines, move.struct_end_line).?;
-                        const end_line = lines.getAt(line_idx).?;
-                        try new_lines.append(allocator, end_line.*);
-                        try lines.removeAt(allocator, line_idx);
-                        try struct_end_added.put(move.struct_type_name, {});
-                    }
-                    // Check the level of indentation of the function
-                    var indent_lvl: usize = 0;
-                    const start_line = lines.getAt(getIdxOfLineNum(lines, move.fn_line).?).?;
-                    while (start_line.chars[indent_lvl] == ' ') {
-                        indent_lvl += 1;
-                    }
-                    std.debug.assert(line.value.num == move.fn_line);
-                    // Okay now we need to find and replace the function name with the struct type
-                    // followed by an underscore and then the function name like `MyStruct_function`.
-                    // And then we need to do the same but also add the `asm("...")` line afterwards,
-                    // change the `{` to a `;` and remove all whitespaces in front of the `;`. This
-                    // line needs to be inserted first.
-                    const new_fn_name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ move.struct_type_name, move.fn_name });
-                    defer allocator.free(new_fn_name);
-                    const line_name_replaced: []const u8 = try std.mem.replaceOwned(u8, allocator, start_line.chars, move.fn_name, new_fn_name);
-                    defer allocator.free(line_name_replaced);
-                    const last_character: u8 = line_name_replaced[line_name_replaced.len - 1];
-                    std.debug.assert(last_character == ';');
-                    var line_definition: []const u8 = try allocator.dupe(u8, line_name_replaced);
-                    defer allocator.free(line_definition);
-                    var line_definition_trimmed = line_definition[0 .. line_definition.len - 1];
-                    // Remove all whitespacing and then create the definition name
-                    line_definition_trimmed = std.mem.trimEnd(u8, line_definition_trimmed, &std.ascii.whitespace);
-                    const formatted_definition_line = try std.fmt.allocPrint(allocator, "{s} asm(\"{s}.{s}\");", .{
-                        line_definition_trimmed,
-                        move.struct_type_name,
-                        move.fn_name,
-                    });
-                    defer allocator.free(formatted_definition_line);
-                    // Now add the definition line with the `asm` formatted at the end
-                    try new_lines.append(allocator, .{
-                        .num = start_line.num,
-                        .chars = formatted_definition_line[indent_lvl..],
-                    });
-                    // Remove the function definition line from the input so that it id not added twice
-                    const line_idx: usize = lines.getIdxOf(&line.value).?;
-                    line_it = line.next;
-                    try lines.removeAt(allocator, line_idx);
-                    changes_head = change.next;
-                    continue;
-                },
-                .namespace => |namespace| {
-                    if (line.value.num != namespace.line) {
-                        break :blk;
-                    }
-                    // Modify the input line directly without adding it to the output. This way other
-                    // changes to this line (for example from the `instance`) can still take effect.
-                    line.value.chars[namespace.column] = '_';
-                    changes_head = change.next;
-                    continue;
-                },
-                .instance => |instance| {
-                    if (line.value.num != instance.line) {
-                        break :blk;
-                    }
-                    // Modify the input line directly without adding it to the output. This way other
-                    // changes to this line can still take effect.
-                    const instance_fmt_empty = try std.fmt.allocPrint(allocator, "{s}.{s}()", .{
-                        instance.instance,
-                        instance.fn_name,
-                    });
-                    defer allocator.free(instance_fmt_empty);
-                    const replace_fmt_empty = try std.fmt.allocPrint(allocator, "{s}_{s}(&{s})", .{
-                        instance.type,
-                        instance.fn_name,
-                        instance.instance,
-                    });
-                    defer allocator.free(replace_fmt_empty);
-                    const new_line_empty = try std.mem.replaceOwned(
-                        u8,
-                        allocator,
-                        line.value.chars,
-                        instance_fmt_empty,
-                        replace_fmt_empty,
-                    );
-                    defer allocator.free(new_line_empty);
-
-                    const instance_fmt = try std.fmt.allocPrint(allocator, "{s}.{s}(", .{
-                        instance.instance,
-                        instance.fn_name,
-                    });
-                    defer allocator.free(instance_fmt);
-                    const replace_fmt = try std.fmt.allocPrint(allocator, "{s}_{s}(&{s}, ", .{
-                        instance.type,
-                        instance.fn_name,
-                        instance.instance,
-                    });
-                    defer allocator.free(replace_fmt);
-                    const new_line = try std.mem.replaceOwned(u8, allocator, new_line_empty, instance_fmt, replace_fmt);
-                    allocator.free(line.value.chars);
-                    line.value.chars = new_line;
-                    changes_head = change.next;
-                    continue;
-                },
-                .defer_s => |defer_s| {
-                    if (line.value.num < defer_s.line) {
-                        break :blk;
-                    }
-                    if (defer_s.content_line_begin == defer_s.content_line_end) {
-                        // Single statement
-                        const content = defer_contents.get(defer_s.content_line_begin).?;
-                        const content_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{[c]s}", .{
-                            .s = "",
-                            .n = defer_s.indentation,
-                            .c = content,
-                        });
-                        defer allocator.free(content_line);
-                        try new_lines.append(allocator, .{
-                            .num = line.value.num,
-                            .chars = content_line,
-                        });
-                    } else {
-                        // Block
-                        const block_open_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{{", .{
-                            .s = "",
-                            .n = defer_s.indentation,
-                        });
-                        defer allocator.free(block_open_line);
-                        try new_lines.append(allocator, .{
-                            .num = line.value.num,
-                            .chars = block_open_line,
-                        });
-                        for (defer_s.content_line_begin + 1..defer_s.content_line_end) |line_num| {
-                            const content = defer_contents.get(line_num).?;
-                            const content_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{[c]s}", .{
-                                .s = "",
-                                .n = defer_s.indentation + 2,
-                                .c = content,
-                            });
-                            defer allocator.free(content_line);
-                            try new_lines.append(allocator, .{
-                                .num = line.value.num,
-                                .chars = content_line,
-                            });
-                        }
-                        const block_close_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}}}", .{
-                            .s = "",
-                            .n = defer_s.indentation,
-                        });
-                        defer allocator.free(block_close_line);
-                        try new_lines.append(allocator, .{
-                            .num = line.value.num,
-                            .chars = block_close_line,
-                        });
-                    }
-                    changes_head = change.next;
-                    continue;
-                },
-                .defer_return_remove => |remove| {
-                    if (line.value.num != remove.line) {
-                        break :blk;
-                    }
-                    const fn_line_idx = getIdxOfLineNum(lines, remove.fn_type_line).?;
-                    const fn_line = lines.getAt(fn_line_idx).?;
-                    const fn_type = fn_line.chars[0..remove.fn_type_end];
-                    const replacement = try std.fmt.allocPrint(allocator, "{s} {s} =", .{ fn_type, remove.var_name });
-                    defer allocator.free(replacement);
-                    const formatted_line = try std.mem.replaceOwned(u8, allocator, line.value.chars, "return", replacement);
-                    defer allocator.free(formatted_line);
-                    try new_lines.append(allocator, .{
-                        .num = line.value.num,
-                        .chars = formatted_line,
-                    });
-                    const line_idx: usize = lines.getIdxOf(&line.value).?;
-                    line_it = line.next;
-                    try lines.removeAt(allocator, line_idx);
-                    changes_head = change.next;
-                    continue;
-                },
-                .defer_return_insert => |insert| {
-                    if (line.value.num < insert.line) {
-                        break :blk;
-                    }
-                    const return_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}return {[c]s};", .{
-                        .s = "",
-                        .n = insert.indentation,
-                        .c = insert.var_name,
-                    });
-                    defer allocator.free(return_line);
-                    try new_lines.append(allocator, .{
-                        .num = line.value.num,
-                        .chars = return_line,
-                    });
-                    changes_head = change.next;
-                    continue;
-                },
-            }
-        }
-        if (defer_contents.get(line.value.num) != null) {
-            // This content line has not been removed from the input yet and it's marked as "dirty"
-            const line_idx: usize = getIdxOfLineNum(lines, line.value.num).?;
-            const content_line = lines.getAt(line_idx).?;
-            const line_tokens = self.getTokensOfLine(line.value.num);
-            var content_start: usize = 0;
-            if (line_tokens[0].type == .@"defer") {
-                // Single statement
-                content_start = line_tokens[1].column;
-            } else {
-                // One line inside the block
-                content_start = line_tokens[0].column;
-            }
-            const line_content = content_line.chars[content_start..];
-            try defer_contents.put(line.value.num, try allocator.dupe(u8, line_content));
-            try lines.removeAt(allocator, line_idx);
-            line_it = line.next;
-            continue;
-        }
-        try new_lines.append(allocator, line.value);
-        line_it = line.next;
-    }
-
-    // Now we build up the output string from all the lines
-    line_it = new_lines.head;
-    var writer_allocating: std.Io.Writer.Allocating = .init(allocator);
-    defer writer_allocating.deinit();
-    const writer = &writer_allocating.writer;
-    while (line_it) |line| {
-        try writer.writeAll(line.value.chars);
-        if (line.next != null) {
-            try writer.writeByte('\n');
-        }
-        line_it = line.next;
-    }
-    try writer.flush();
-    return allocator.dupe(u8, writer.buffered());
 }
 
-pub fn printChanges(self: *Self) void {
+fn printChanges(self: *Self) void {
     var i: usize = 0;
     var change_maybe = self.changes.head;
     while (change_maybe) |change| {
@@ -1030,38 +659,228 @@ pub fn printChanges(self: *Self) void {
     }
 }
 
-pub fn createHash(input: []const u8, hash: *[8]u8) void {
-    const charset: []const u8 = "123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    const charset_size: u32 = 61;
+fn createHash(input: []const u8, hash: *[8]u8) void {
+    const charset = "123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
     hash[0] = '0';
-    if (input.len == 0) {
+    if (input.len < hash.len) {
         return;
     }
 
-    var seed: u32 = 2166136261;
+    var seed: u32 = 2_166_136_261;
 
     // FNV-1a over bytes; perform multiplication in u64 and truncate
     for (input) |b| {
         seed ^= @intCast(b);
-        seed = @truncate(@as(u64, seed) * 16777619);
+        seed = @truncate(@as(u64, seed) * 16_777_619);
     }
 
-    var i: u32 = 0;
-    while (i < 8) : (i += 1) {
+    for (0..hash.len) |i| {
         // compute pos_hash with truncating 32-bit behavior
-        var pos_hash: u32 = seed ^ @as(u32, @truncate(@as(u64, i) * 0x9E3779B9));
+        var pos_hash: u32 = seed ^ @as(u32, @truncate(i * 0x9E_37_79_B9));
 
-        pos_hash = @truncate(@as(u64, pos_hash) * 0x85EBCA6B);
+        pos_hash = @truncate(@as(u64, pos_hash) * 0x85_EB_CA_6B);
         pos_hash ^= pos_hash >> 13;
-        pos_hash = @truncate(@as(u64, pos_hash) * 0xC2B2AE35);
+        pos_hash = @truncate(@as(u64, pos_hash) * 0xC2_B2_AE_35);
         pos_hash ^= pos_hash >> 16;
 
-        const idx: usize = @intCast(pos_hash % charset_size);
-        hash[@as(usize, @intCast(i))] = charset[idx];
+        const idx: usize = @intCast(pos_hash % charset.len);
+        hash[i] = charset[idx];
 
         seed = pos_hash;
     }
+}
+
+fn applyMove(
+    allocator: std.mem.Allocator,
+    move: changes_file.ChangeMoveFunction,
+    struct_end_added: *std.StringHashMap(void),
+    input_file: *File,
+    output_file: *File,
+    line_num: usize,
+) !void {
+    // If the 'struct_end_added' map does not contain an entry for the current struct type
+    // then we need to first add the struct end line to the output lines and remove it from
+    // the input lines all together
+    if (struct_end_added.getKey(move.struct_type_name) == null) {
+        const line_idx: usize = getIdxOfLineNum(input_file.lines, move.struct_end_line).?;
+        const end_line = input_file.lines.getAt(line_idx).?;
+        try output_file.lines.append(allocator, end_line.*);
+        try input_file.lines.removeAt(allocator, line_idx);
+        try struct_end_added.put(move.struct_type_name, {});
+    }
+    // Check the level of indentation of the function
+    var indent_lvl: usize = 0;
+    const start_line = input_file.lines.getAt(getIdxOfLineNum(input_file.lines, move.fn_line).?).?;
+    while (start_line.chars[indent_lvl] == ' ') {
+        indent_lvl += 1;
+    }
+    std.debug.assert(line_num == move.fn_line);
+    // Okay now we need to find and replace the function name with the struct type
+    // followed by an underscore and then the function name like `MyStruct_function`.
+    // And then we need to do the same but also add the `asm("...")` line afterwards,
+    // change the `{` to a `;` and remove all whitespaces in front of the `;`. This
+    // line needs to be inserted first.
+    const new_fn_name = try std.fmt.allocPrint(allocator, "{s}_{s}", .{ move.struct_type_name, move.fn_name });
+    defer allocator.free(new_fn_name);
+    const line_name_replaced: []const u8 = try std.mem.replaceOwned(u8, allocator, start_line.chars, move.fn_name, new_fn_name);
+    defer allocator.free(line_name_replaced);
+    const last_character: u8 = line_name_replaced[line_name_replaced.len - 1];
+    std.debug.assert(last_character == ';');
+    var line_definition: []const u8 = try allocator.dupe(u8, line_name_replaced);
+    defer allocator.free(line_definition);
+    var line_definition_trimmed = line_definition[0 .. line_definition.len - 1];
+    // Remove all whitespacing and then create the definition name
+    line_definition_trimmed = std.mem.trimEnd(u8, line_definition_trimmed, &std.ascii.whitespace);
+    const formatted_definition_line = try std.fmt.allocPrint(allocator, "{s} asm(\"{s}.{s}\");", .{
+        line_definition_trimmed,
+        move.struct_type_name,
+        move.fn_name,
+    });
+    defer allocator.free(formatted_definition_line);
+    // Now add the definition line with the `asm` formatted at the end
+    try output_file.lines.append(allocator, .{
+        .num = start_line.num,
+        .chars = formatted_definition_line[indent_lvl..],
+    });
+}
+
+fn applyInstance(allocator: std.mem.Allocator, instance: changes_file.ChangeInstanceCall, line_chars: []const u8) ![]u8 {
+    // Modify the input line directly without adding it to the output. This way other
+    // changes to this line can still take effect.
+    const instance_fmt_empty = try std.fmt.allocPrint(allocator, "{s}.{s}()", .{
+        instance.instance,
+        instance.fn_name,
+    });
+    defer allocator.free(instance_fmt_empty);
+    const replace_fmt_empty = try std.fmt.allocPrint(allocator, "{s}_{s}(&{s})", .{
+        instance.type,
+        instance.fn_name,
+        instance.instance,
+    });
+    defer allocator.free(replace_fmt_empty);
+    const new_line_empty = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        line_chars,
+        instance_fmt_empty,
+        replace_fmt_empty,
+    );
+    defer allocator.free(new_line_empty);
+
+    const instance_fmt = try std.fmt.allocPrint(allocator, "{s}.{s}(", .{
+        instance.instance,
+        instance.fn_name,
+    });
+    defer allocator.free(instance_fmt);
+    const replace_fmt = try std.fmt.allocPrint(allocator, "{s}_{s}(&{s}, ", .{
+        instance.type,
+        instance.fn_name,
+        instance.instance,
+    });
+    defer allocator.free(replace_fmt);
+    return std.mem.replaceOwned(u8, allocator, new_line_empty, instance_fmt, replace_fmt);
+}
+
+fn applyDeferStatement(
+    allocator: std.mem.Allocator,
+    defer_s: changes_file.ChangeDeferStatement,
+    defer_contents: *const std.AutoHashMap(usize, []const u8),
+    output_file: *File,
+    line_num: usize,
+) !void {
+    // Single statement
+    if (defer_s.content_line_begin == defer_s.content_line_end) {
+        const content = defer_contents.get(defer_s.content_line_begin).?;
+        const content_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{[c]s}", .{
+            .s = "",
+            .n = defer_s.indentation,
+            .c = content,
+        });
+        defer allocator.free(content_line);
+        try output_file.lines.append(allocator, .{
+            .num = line_num,
+            .chars = content_line,
+        });
+        return;
+    }
+
+    // Block
+    const block_open_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{{", .{
+        .s = "",
+        .n = defer_s.indentation,
+    });
+    defer allocator.free(block_open_line);
+    try output_file.lines.append(allocator, .{
+        .num = line_num,
+        .chars = block_open_line,
+    });
+    for (defer_s.content_line_begin + 1..defer_s.content_line_end) |content_line_num| {
+        const content = defer_contents.get(content_line_num).?;
+        const content_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}{[c]s}", .{
+            .s = "",
+            .n = defer_s.indentation + 2,
+            .c = content,
+        });
+        defer allocator.free(content_line);
+        try output_file.lines.append(allocator, .{
+            .num = line_num,
+            .chars = content_line,
+        });
+    }
+    const block_close_line = try std.fmt.allocPrint(allocator, "{[s]s: >[n]}}}", .{
+        .s = "",
+        .n = defer_s.indentation,
+    });
+    defer allocator.free(block_close_line);
+    try output_file.lines.append(allocator, .{
+        .num = line_num,
+        .chars = block_close_line,
+    });
+}
+
+fn collectDeferContents(self: *Self, allocator: std.mem.Allocator, defer_contents: *std.AutoHashMap(usize, []const u8), input_file: *File) !void {
+    // Collect which lines are sources of the defer statements. We mark these lines as "dirty" and
+    // once we reach those lines in the loop below we do not output them but actually put them into
+    // this map. For now this map only contains undefined strings, and it needs to be filled during
+    // the loop execution. We can do this because by the time we actually need the information
+    // (when we generate the statements from the defers) the actual definition of the defer was
+    // many lines higher up.
+    var changes_iter = self.changes.iter();
+    while (changes_iter.next()) |change| {
+        switch (change.*) {
+            .defer_s => |defer_s| {
+                if (defer_s.content_line_begin == defer_s.content_line_end) {
+                    // Single statement
+                    if (defer_contents.get(defer_s.content_line_begin) == null) {
+                        try defer_contents.put(defer_s.content_line_begin, "");
+                    }
+                } else {
+                    // Block
+                    if (getIdxOfLineNum(input_file.lines, defer_s.content_line_end)) |end_line_idx| {
+                        try input_file.lines.removeAt(allocator, end_line_idx);
+                    }
+                    if (getIdxOfLineNum(input_file.lines, defer_s.content_line_begin)) |begin_line_idx| {
+                        try input_file.lines.removeAt(allocator, begin_line_idx);
+                    }
+                    for (defer_s.content_line_begin + 1..defer_s.content_line_end) |line_num| {
+                        if (defer_contents.get(line_num) == null) {
+                            try defer_contents.put(line_num, "");
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn freeDeferContents(allocator: std.mem.Allocator, defer_contents: *std.AutoHashMap(usize, []const u8)) void {
+    var defer_iter = defer_contents.iterator();
+    while (defer_iter.next()) |content| {
+        allocator.free(content.value_ptr.*);
+    }
+    defer_contents.deinit();
 }
 
 fn getTokensOfLine(self: *Self, line_num: usize) []Token {

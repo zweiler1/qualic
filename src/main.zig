@@ -1,9 +1,8 @@
 const std = @import("std");
 const clap = @import("clap");
 
-const Lexer = @import("Lexer.zig");
+const File = @import("File.zig");
 const Parser = @import("Parser.zig");
-const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
 
 // 1. Run the pre-processor stage
 //      clang -E -x c -P test.in.qlc -o test.middle.qlc
@@ -16,7 +15,7 @@ const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
 // so maybe just write `qc test.in.qlc -o test` and it generates the binary?
 // Or should it rather only generate `.o` files which need to be linked together? hmmm idk
 
-const VERSION = "0.0.1";
+const VERSION = @import("version").VERSION;
 
 const params = clap.parseParamsComptime(
     \\-h, --help             display this help and exit
@@ -29,11 +28,11 @@ const params = clap.parseParamsComptime(
 );
 
 pub const Options = struct {
-    dry: bool = false,
-    output: []const u8 = "quali.c",
-    input: []const u8 = undefined,
-    preprocess: bool = false,
-    verbose: bool = false,
+    dry: bool,
+    output: []const u8,
+    input: []const u8,
+    preprocess: bool,
+    verbose: bool,
 };
 
 pub fn main() !void {
@@ -41,10 +40,10 @@ pub fn main() !void {
     defer std.debug.assert(debug_allocator.deinit() == .ok);
     const allocator = debug_allocator.allocator();
 
-    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_buffer: [1024]u8 = [_]u8{0} ** 1024;
     var stdout_writer: std.fs.File.Writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout: *std.Io.Writer = &stdout_writer.interface;
-    var stderr_buffer: [1024]u8 = undefined;
+    var stderr_buffer: [1024]u8 = [_]u8{0} ** 1024;
     var stderr_writer: std.fs.File.Writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr: *std.Io.Writer = &stderr_writer.interface;
 
@@ -52,7 +51,7 @@ pub fn main() !void {
         .INPUT = clap.parsers.string,
         .OUTPUT = clap.parsers.string,
     };
-    var diag = clap.Diagnostic{};
+    var diag: clap.Diagnostic = .{};
     var res = clap.parse(clap.Help, &params, parsers, .{
         .diagnostic = &diag,
         .allocator = allocator,
@@ -88,13 +87,8 @@ pub fn main() !void {
         .preprocess = res.args.preprocess != 0,
         .verbose = res.args.verbose != 0,
     };
-    // std.debug.print("options: {{ .input = \"{s}\", .output = \"{s}\", .preprocess = {any} }}\n", .{
-    //     options.input,
-    //     options.output,
-    //     options.preprocess,
-    // });
 
-    const middle = "test.middle.qlc";
+    const middle: []const u8 = "test.middle.qlc";
     if (options.preprocess) {
         var preproc: std.process.Child = .init(&[_][]const u8{
             "clang",
@@ -111,49 +105,59 @@ pub fn main() !void {
     }
 
     // Load the preprocessed file
-    const file_to_parse = if (options.preprocess) middle else options.input;
+    const file_to_parse: []const u8 = if (options.preprocess) middle else options.input;
     const file = try std.fs.cwd().openFile(file_to_parse, .{});
     defer file.close();
     const stat = try file.stat();
-    const file_content = try allocator.alloc(u8, stat.size);
+    const stat_size: usize = @intCast(stat.size);
+    const file_content = try allocator.alloc(u8, stat_size);
     defer allocator.free(file_content);
-    try file.seekTo(0);
     const bytes_read = try file.readAll(file_content);
-    if (bytes_read != stat.size) {
-        std.debug.print("Not all bytes read! {d}/{d}\n", .{ bytes_read, stat.size });
+
+    if (bytes_read != stat_size) {
+        try stderr.print("Not all bytes could be read! {d}/{d}\n", .{ bytes_read, stat_size });
+        return stderr.flush();
     }
     if (options.verbose) {
-        std.debug.print("------ Input Start ------\n{s}\n------ Input End ------\n", .{file_content});
+        try stdout.print("------ Input Start ------\n{s}\n------ Input End ------\n", .{file_content});
+        try stdout.flush();
     }
 
     // Try to parse and apply all changes in one go
-    var parser: Parser = try .init(allocator, file_content, options);
+    var parser: Parser = try .init(allocator, file_content, options.verbose);
     defer parser.deinit(allocator);
     try parser.parse(allocator);
     // Apply all the changes and get the combined file back
-    const parser_output: []const u8 = try parser.apply(allocator);
+    parser.sortChanges(options.verbose);
+    var parser_output_file: File = try parser.apply(allocator);
+    defer parser_output_file.deinit(allocator);
+    const parser_output: []const u8 = try parser_output_file.merge(allocator);
     defer allocator.free(parser_output);
 
     if (options.dry) {
         try stdout.print("{s}", .{parser_output});
+        return stdout.flush();
+    }
+    if (options.verbose) {
+        try stdout.print("------ Output Start ------\n{s}\n------ Output End ------\n", .{parser_output});
         try stdout.flush();
-        return;
     }
 
     // Write the parser output into the output file
     const out_file = std.fs.cwd().createFile(options.output, .{ .truncate = true }) catch |err| {
-        std.debug.print("Failed to create file: {}\n", .{err});
+        try stderr.print("Failed to create output file '{s}'\n", .{options.output});
+        try stderr.flush();
         return err;
     };
     defer out_file.close();
-    var buf: [1024]u8 = undefined;
+    var buf: [1024]u8 = [_]u8{0} ** 1024;
     var file_writer = out_file.writer(&buf);
     var writer = &file_writer.interface;
     try writer.writeAll(parser_output);
     try writer.flush();
 }
 
-fn usage(stdout: *std.io.Writer) !void {
+fn usage(stdout: *std.Io.Writer) !void {
     try stdout.print(
         \\Usage: qualic INPUT [OPTION]..
         \\

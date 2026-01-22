@@ -4,12 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const version: []const u8 = @import("build.zig.zon").version;
+
+    const imports = b.addOptions();
+    imports.addOption([]const u8, "VERSION", version);
+    const mod = imports.createModule();
+
     const exe = b.addExecutable(.{
         .name = "qualic",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{.{ .name = "version", .module = mod }},
         }),
         .use_llvm = true,
         .use_lld = true,
