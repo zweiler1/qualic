@@ -35,16 +35,14 @@ pub const Options = struct {
     verbose: bool,
 };
 
-pub fn main() !void {
-    var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-    defer std.debug.assert(debug_allocator.deinit() == .ok);
-    const allocator = debug_allocator.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     var stdout_buffer: [1024]u8 = [_]u8{0} ** 1024;
-    var stdout_writer: std.fs.File.Writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer: std.Io.File.Writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout: *std.Io.Writer = &stdout_writer.interface;
     var stderr_buffer: [1024]u8 = [_]u8{0} ** 1024;
-    var stderr_writer: std.fs.File.Writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer: std.Io.File.Writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     const stderr: *std.Io.Writer = &stderr_writer.interface;
 
     const parsers = comptime .{
@@ -52,7 +50,7 @@ pub fn main() !void {
         .OUTPUT = clap.parsers.string,
     };
     var diag: clap.Diagnostic = .{};
-    var res = clap.parse(clap.Help, &params, parsers, .{
+    var res = clap.parse(clap.Help, &params, parsers, init.minimal.args, .{
         .diagnostic = &diag,
         .allocator = allocator,
     }) catch |err| {
@@ -90,34 +88,30 @@ pub fn main() !void {
 
     const middle: []const u8 = "test.middle.qlc";
     if (options.preprocess) {
-        var preproc: std.process.Child = .init(&[_][]const u8{
-            "clang",
-            "-E",
-            "-x",
-            "c",
-            "-P",
-            options.input,
-            "-o",
-            middle,
-        }, allocator);
+        var preproc: std.process.Child = try std.process.spawn(init.io, .{
+            .argv = &[_][]const u8{
+                "clang",
+                "-E",
+                "-x",
+                "c",
+                "-P",
+                options.input,
+                "-o",
+                middle,
+            },
+        });
         // Run the process stage
-        _ = try preproc.spawnAndWait();
+        _ = try preproc.wait(init.io);
     }
 
     // Load the preprocessed file
     const file_to_parse: []const u8 = if (options.preprocess) middle else options.input;
-    const file = try std.fs.cwd().openFile(file_to_parse, .{});
-    defer file.close();
-    const stat = try file.stat();
-    const stat_size: usize = @intCast(stat.size);
-    const file_content = try allocator.alloc(u8, stat_size);
-    defer allocator.free(file_content);
-    const bytes_read = try file.readAll(file_content);
-
-    if (bytes_read != stat_size) {
-        try stderr.print("Not all bytes could be read! {d}/{d}\n", .{ bytes_read, stat_size });
+    const file_content: []const u8 = std.Io.Dir.cwd().readFileAlloc(init.io, file_to_parse, allocator, .limited(std.math.maxInt(u32))) catch |err| {
+        try stderr.print("{t}: Failed to read file '{s}'\n", .{ err, file_to_parse });
         return stderr.flush();
-    }
+    };
+    defer allocator.free(file_content);
+
     if (options.verbose) {
         try stdout.print("------ Input Start ------\n{s}\n------ Input End ------\n", .{file_content});
         try stdout.flush();
@@ -144,17 +138,14 @@ pub fn main() !void {
     }
 
     // Write the parser output into the output file
-    const out_file = std.fs.cwd().createFile(options.output, .{ .truncate = true }) catch |err| {
-        try stderr.print("Failed to create output file '{s}'\n", .{options.output});
+    std.Io.Dir.cwd().writeFile(init.io, .{
+        .sub_path = options.output,
+        .data = parser_output,
+    }) catch |err| {
+        try stderr.print("{t}: Failed to write output file '{s}'\n", .{ err, options.output });
         try stderr.flush();
         return err;
     };
-    defer out_file.close();
-    var buf: [1024]u8 = [_]u8{0} ** 1024;
-    var file_writer = out_file.writer(&buf);
-    var writer = &file_writer.interface;
-    try writer.writeAll(parser_output);
-    try writer.flush();
 }
 
 fn usage(stdout: *std.Io.Writer) !void {
